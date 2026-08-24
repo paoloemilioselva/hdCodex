@@ -8,10 +8,17 @@
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
+#include "pxr/imaging/hio/image.h"
+#include "pxr/imaging/hio/types.h"
+#include "pxr/usd/sdf/assetPath.h"
 
 #if defined(HDCODEX_HAS_MATERIALX)
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 #endif
+
+#include <optional>
+#include <set>
+#include <string_view>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -37,6 +44,10 @@ float FloatParameter(const HdMaterialNode2& node, const char* name, float fallba
     const VtValue& value = found->second;
     if (value.IsHolding<float>()) return value.UncheckedGet<float>();
     if (value.IsHolding<double>()) return static_cast<float>(value.UncheckedGet<double>());
+    if (value.IsHolding<GfVec3f>()) return value.UncheckedGet<GfVec3f>()[0];
+    if (value.IsHolding<GfVec3d>()) {
+        return static_cast<float>(value.UncheckedGet<GfVec3d>()[0]);
+    }
     return fallback;
 }
 
@@ -62,8 +73,99 @@ std::array<float, 3> ColorParameter(
     return fallback;
 }
 
+std::optional<std::string> FileParameter(const HdMaterialNode2& node)
+{
+    const auto found = node.parameters.find(TfToken("file"));
+    if (found == node.parameters.end()) return std::nullopt;
+    const VtValue& value = found->second;
+    if (value.IsHolding<SdfAssetPath>()) {
+        const SdfAssetPath& asset = value.UncheckedGet<SdfAssetPath>();
+        return asset.GetResolvedPath().empty() ? asset.GetAssetPath() : asset.GetResolvedPath();
+    }
+    if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
+    if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
+    return std::nullopt;
+}
+
+std::optional<std::string> FindTextureRecursive(
+    const HdMaterialNetwork2& network,
+    const SdfPath& nodePath,
+    std::set<SdfPath>& visited)
+{
+    if (!visited.insert(nodePath).second) return std::nullopt;
+    const auto found = network.nodes.find(nodePath);
+    if (found == network.nodes.end()) return std::nullopt;
+    const HdMaterialNode2& node = found->second;
+    if (node.nodeTypeId.GetString().find("image") != std::string::npos) {
+        if (const auto file = FileParameter(node); file && !file->empty()) return file;
+    }
+    for (const auto& [inputName, connections] : node.inputConnections) {
+        (void)inputName;
+        for (const HdMaterialConnection2& connection : connections) {
+            if (const auto path = FindTextureRecursive(
+                    network, connection.upstreamNode, visited)) return path;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> TextureForInput(
+    const HdMaterialNetwork2& network,
+    const HdMaterialNode2& surface,
+    const char* inputName)
+{
+    const auto found = surface.inputConnections.find(TfToken(inputName));
+    if (found == surface.inputConnections.end()) return std::nullopt;
+    for (const HdMaterialConnection2& connection : found->second) {
+        std::set<SdfPath> visited;
+        if (const auto path = FindTextureRecursive(
+                network, connection.upstreamNode, visited)) return path;
+    }
+    return std::nullopt;
+}
+
+std::string LoadTexture(
+    hdcodex::VersionedScene* scene,
+    const std::optional<std::string>& path,
+    bool srgb)
+{
+    if (!scene || !path || path->empty()) return {};
+    const std::string id = *path + (srgb ? "#srgb" : "#raw");
+    if (scene->HasTexture(id)) return id;
+
+    const HioImageSharedPtr image = HioImage::OpenForReading(
+        *path, 0, 0, srgb ? HioImage::SRGB : HioImage::Raw, true);
+    if (!image || image->GetWidth() <= 0 || image->GetHeight() <= 0) {
+        TF_WARN("hdCodex could not open texture %s", path->c_str());
+        return {};
+    }
+
+    hdcodex::SceneTexture texture;
+    texture.id = id;
+    texture.sourcePath = *path;
+    texture.width = static_cast<std::uint32_t>(image->GetWidth());
+    texture.height = static_cast<std::uint32_t>(image->GetHeight());
+    texture.srgb = srgb;
+    texture.rgba.resize(static_cast<std::size_t>(texture.width) * texture.height * 4U);
+    HioImage::StorageSpec storage;
+    storage.width = image->GetWidth();
+    storage.height = image->GetHeight();
+    storage.depth = 1;
+    storage.format = HioFormatUNorm8Vec4;
+    storage.flipped = true;
+    storage.data = texture.rgba.data();
+    if (!image->Read(storage)) {
+        TF_WARN("hdCodex could not decode texture %s", path->c_str());
+        return {};
+    }
+    scene->UpsertTexture(std::move(texture));
+    return id;
+}
+
 hdcodex::SceneMaterial ExtractSceneMaterial(
-    const VtValue& resource, const SdfPath& materialPath)
+    const VtValue& resource,
+    const SdfPath& materialPath,
+    hdcodex::VersionedScene* scene)
 {
     hdcodex::SceneMaterial material;
     material.id = materialPath.GetString();
@@ -79,6 +181,21 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             material.emission = ColorParameter(node, "emission_color", material.emission);
             for (float& component : material.emission) component *= emissionWeight;
             material.opacity = FloatParameter(node, "opacity", material.opacity);
+            material.transmission = FloatParameter(node, "transmission", material.transmission);
+            material.indexOfRefraction = FloatParameter(
+                node, "specular_IOR", material.indexOfRefraction);
+            material.baseColorTexture = LoadTexture(
+                scene, TextureForInput(network, node, "base_color"), true);
+            material.metalnessTexture = LoadTexture(
+                scene, TextureForInput(network, node, "metalness"), false);
+            material.roughnessTexture = LoadTexture(
+                scene, TextureForInput(network, node, "specular_roughness"), false);
+            material.emissionTexture = LoadTexture(
+                scene, TextureForInput(network, node, "emission_color"), true);
+            material.opacityTexture = LoadTexture(
+                scene, TextureForInput(network, node, "opacity"), false);
+            material.normalTexture = LoadTexture(
+                scene, TextureForInput(network, node, "normal"), false);
             return material;
         }
         if (type.find("UsdPreviewSurface") != std::string::npos) {
@@ -87,6 +204,19 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             material.roughness = FloatParameter(node, "roughness", material.roughness);
             material.emission = ColorParameter(node, "emissiveColor", material.emission);
             material.opacity = FloatParameter(node, "opacity", material.opacity);
+            material.indexOfRefraction = FloatParameter(node, "ior", material.indexOfRefraction);
+            material.baseColorTexture = LoadTexture(
+                scene, TextureForInput(network, node, "diffuseColor"), true);
+            material.metalnessTexture = LoadTexture(
+                scene, TextureForInput(network, node, "metallic"), false);
+            material.roughnessTexture = LoadTexture(
+                scene, TextureForInput(network, node, "roughness"), false);
+            material.emissionTexture = LoadTexture(
+                scene, TextureForInput(network, node, "emissiveColor"), true);
+            material.opacityTexture = LoadTexture(
+                scene, TextureForInput(network, node, "opacity"), false);
+            material.normalTexture = LoadTexture(
+                scene, TextureForInput(network, node, "normal"), false);
             return material;
         }
     }
@@ -135,7 +265,8 @@ void HdCodexMaterial::Sync(HdSceneDelegate* sceneDelegate,
 #if defined(HDCODEX_HAS_MATERIALX)
         std::shared_ptr<const hdcodex::MaterialXCompiledShader> compiled;
         if (auto* param = dynamic_cast<HdCodexRenderParam*>(renderParam)) {
-            param->GetScene()->UpsertMaterial(ExtractSceneMaterial(resource, GetId()));
+            param->GetScene()->UpsertMaterial(
+                ExtractSceneMaterial(resource, GetId(), param->GetScene()));
             try {
                 compiled = CompileMaterialX(resource, GetId(), param->GetMaterialCompiler());
             } catch (const std::exception& error) {

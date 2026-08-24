@@ -111,6 +111,25 @@ void TestSceneCarriesFaceCornerTextureCoordinates()
             "face-corner texture coordinates were not preserved");
 }
 
+void TestSceneDeduplicatesDecodedTextures()
+{
+    hdcodex::VersionedScene scene;
+    hdcodex::SceneTexture texture;
+    texture.id = "albedo#srgb";
+    texture.sourcePath = "albedo.png";
+    texture.width = 1;
+    texture.height = 1;
+    texture.srgb = true;
+    texture.rgba = {10, 20, 30, 255};
+    scene.UpsertTexture(texture);
+    Require(scene.HasTexture(texture.id), "decoded texture was not retained");
+    (void)scene.Publish();
+    const auto snapshot = scene.Snapshot();
+    Require(snapshot->textures.size() == 1, "decoded texture was not published");
+    Require(snapshot->textures.front().rgba == texture.rgba,
+            "published texture pixels changed");
+}
+
 } // namespace
 
 int main()
@@ -120,6 +139,7 @@ int main()
         TestCache();
         TestVersionedScene();
         TestSceneCarriesFaceCornerTextureCoordinates();
+        TestSceneDeduplicatesDecodedTextures();
         std::cout << "hdCodex core tests passed\n";
         return 0;
     } catch (const std::exception& error) {

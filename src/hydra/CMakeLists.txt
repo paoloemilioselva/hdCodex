@@ -17,6 +17,7 @@ target_link_libraries(hdCodex
     hdx
     usdImaging
     usdShade
+    hio
 )
 target_include_directories(hdCodex PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(hdCodex

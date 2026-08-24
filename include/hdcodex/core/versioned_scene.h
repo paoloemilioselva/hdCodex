@@ -28,12 +28,30 @@ struct SceneMaterial {
     float metalness{0.0F};
     float roughness{0.5F};
     float opacity{1.0F};
+    float transmission{0.0F};
+    float indexOfRefraction{1.5F};
+    std::string baseColorTexture;
+    std::string metalnessTexture;
+    std::string roughnessTexture;
+    std::string emissionTexture;
+    std::string opacityTexture;
+    std::string normalTexture;
+};
+
+struct SceneTexture {
+    std::string id;
+    std::string sourcePath;
+    std::uint32_t width{0};
+    std::uint32_t height{0};
+    bool srgb{false};
+    std::vector<std::uint8_t> rgba;
 };
 
 struct SceneSnapshot {
     std::uint64_t revision{0};
     std::vector<SceneMesh> meshes;
     std::vector<SceneMaterial> materials;
+    std::vector<SceneTexture> textures;
 };
 
 /// Tracks staging and published scene revisions without exposing Hydra types to
@@ -73,6 +91,11 @@ public:
             (void)id;
             snapshot->materials.push_back(material);
         }
+        snapshot->textures.reserve(_textures.size());
+        for (const auto& [id, texture] : _textures) {
+            (void)id;
+            snapshot->textures.push_back(texture);
+        }
         _snapshot = std::move(snapshot);
         _published.store(revision, std::memory_order_release);
         return revision;
@@ -106,6 +129,22 @@ public:
         if (_materials.erase(id) != 0U) (void)MarkDirty();
     }
 
+    [[nodiscard]] bool HasTexture(const std::string& id) const
+    {
+        const std::scoped_lock lock(_mutex);
+        return _textures.contains(id);
+    }
+
+    void UpsertTexture(SceneTexture texture)
+    {
+        if (texture.id.empty() || texture.width == 0 || texture.height == 0 ||
+            texture.rgba.size() != static_cast<std::size_t>(texture.width) *
+                texture.height * 4U) return;
+        const std::scoped_lock lock(_mutex);
+        _textures[texture.id] = std::move(texture);
+        (void)MarkDirty();
+    }
+
     [[nodiscard]] std::shared_ptr<const SceneSnapshot> Snapshot() const
     {
         const std::scoped_lock lock(_mutex);
@@ -118,6 +157,7 @@ private:
     mutable std::mutex _mutex;
     std::map<std::string, SceneMesh, std::less<>> _meshes;
     std::map<std::string, SceneMaterial, std::less<>> _materials;
+    std::map<std::string, SceneTexture, std::less<>> _textures;
     std::shared_ptr<const SceneSnapshot> _snapshot =
         std::make_shared<const SceneSnapshot>();
 };
