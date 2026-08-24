@@ -1,8 +1,10 @@
 @ECHO OFF
 SETLOCAL
 
-SET "USDROOT=C:\dev\usd-26.03"
-SET "HDCODEX_INSTALL_DIR=C:\Users\paolo\Desktop\usd-26.03-extra"
+CALL "%~dp0setup_usd_env.bat"
+IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
+
+SET "HDCODEX_INSTALL_DIR=%USDEXTRA%"
 SET "VSDEVCMD=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
 
 IF NOT EXIST "%VSDEVCMD%" (
