@@ -37,3 +37,16 @@ ctest --preset core-only
 
 For the complete delegate, configure an OpenUSD install and enable the optional
 dependency bootstrap described in `docs/building.md`.
+
+On this workstation the complete standalone flow is:
+
+```bat
+compile.bat
+validate_usd.bat
+render_test.bat
+launch_codex.bat
+```
+
+`render_test.bat` defaults to the supplied OpenChessSet asset and accepts an
+optional scene and output path. All USD-facing scripts call
+`setup_usd_env.bat`; none use Houdini libraries.
