@@ -65,6 +65,14 @@ accumulation. Geometry is flattened into one world-space BLAS for this first
 functional path; per-mesh BLAS caching and TLAS instance updates remain a
 performance optimization.
 
+Hydra instancing is flattened at scene synchronization time as well. The
+renderer-owned `HdCodexInstancer` composes the instancer transform with indexed
+translation, quaternion rotation, scale, and matrix primvars, then recursively
+expands parent instancers. This supports PointInstancer and nested HdInstancer
+chains without depending on `hdEmbree` implementation symbols. Moving these
+instances into reusable BLAS plus native TLAS instances is a future performance
+optimization.
+
 ## MaterialX compilation
 
 The default pipeline is:
@@ -96,13 +104,15 @@ triangulated in face-corner order. Images are normalized to RGBA8, uploaded as
 sRGB or raw Vulkan images, and accessed through a partially-bound descriptor
 array currently capped at 256 textures. Opacity participates in primary and
 shadow ray-query candidate confirmation. Transmission supports color,
-IOR/Fresnel refraction, and thin-walled surfaces.
+IOR/Fresnel refraction, and thin-walled surfaces. Standard Surface subsurface
+weight, color, radius, and scale are lowered to a realtime attenuation and
+wrapped-diffuse approximation; this is not yet a random-walk BSSRDF.
 
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute
 shader, so hdCodex separately lowers the supported graph subset into its compute
-ABI. Arbitrary procedural nodes, UDIMs, texture transforms, subsurface, coat,
-sheen, and a general MaterialX-to-path-tracer callable ABI are not implemented.
+ABI. Arbitrary procedural nodes, UDIMs, texture transforms, coat, sheen, a full
+BSSRDF, and a general MaterialX-to-path-tracer callable ABI are not implemented.
 
 ## Threading
 

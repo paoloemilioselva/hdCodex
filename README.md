@@ -17,19 +17,24 @@ This repository is under active development. The current milestone provides a
 loadable Hydra plugin, triangulated scene snapshots, Vulkan BLAS/TLAS builds, a
 five-bounce progressive ray-query path integrator, Hydra color-AOV output, an
 in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
-generation. MaterialX modules are compiled and retained by Hydra materials;
+generation. PointInstancer and nested HdInstancer transforms are expanded from
+public Hydra APIs, including per-instance translation, rotation, scale, and
+matrix primvars. MaterialX modules are compiled and retained by Hydra materials;
 the GPU path integrator evaluates constant and image-driven
 `standard_surface`/Preview Surface base color, metalness, roughness, emission,
-opacity, tangent-space normals, and transmission. Hydra face-varying/indexed UV
-seams are preserved, Hio decodes source images, and a partially-bound Vulkan
-descriptor array provides sRGB-aware texture sampling.
+opacity, tangent-space normals, transmission, and the Standard Surface
+subsurface inputs. Hydra face-varying/indexed UV seams are preserved, Hio
+decodes source images, and a partially-bound Vulkan descriptor array provides
+sRGB-aware texture sampling.
 
 The supported graph subset follows direct image connections (including a
 `normalmap` node) into the surface. General MaterialX procedural graphs, UDIMs,
-texture transforms, subsurface, coat, sheen, and direct callable integration of
-generated MaterialX functions remain future work. Generated Vulkan raster
-stages are compiled and cached, but cannot be invoked directly from the compute
-path tracer; supported inputs are lowered into hdCodex's compute material ABI.
+texture transforms, coat, sheen, a random-walk BSSRDF, and direct callable
+integration of generated MaterialX functions remain future work. The current
+subsurface implementation is a realtime diffusion approximation. Generated
+Vulkan raster stages are compiled and cached, but cannot be invoked directly
+from the compute path tracer; supported inputs are lowered into hdCodex's
+compute material ABI.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
 phases, and [Building](docs/building.md) for local dependency setup.
