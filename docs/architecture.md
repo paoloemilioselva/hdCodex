@@ -73,6 +73,16 @@ chains without depending on `hdEmbree` implementation symbols. Moving these
 instances into reusable BLAS plus native TLAS instances is a future performance
 optimization.
 
+UsdImaging resolves the schema `normals` attribute and `primvars:normals` into
+the Hydra `normals` primvar, with the primvar taking precedence. The mesh adapter
+accepts indexed or unindexed float, double, and half arrays at constant,
+uniform, vertex, varying, or face-varying interpolation. It triangulates them in
+face-corner order and applies the inverse-transpose of each mesh/instance world
+transform. The compute shader barycentrically interpolates these shading
+normals, keeps the geometric triangle normal for facing and ray offsets, and
+then applies any tangent-space material normal map. Missing or invalid authored
+normals fall back to faceted geometric normals.
+
 ## MaterialX compilation
 
 The default pipeline is:

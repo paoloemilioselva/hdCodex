@@ -25,7 +25,10 @@ the GPU path integrator evaluates constant and image-driven
 opacity, tangent-space normals, transmission, and the Standard Surface
 subsurface inputs. Hydra face-varying/indexed UV seams are preserved, Hio
 decodes source images, and a partially-bound Vulkan descriptor array provides
-sRGB-aware texture sampling.
+sRGB-aware texture sampling. Authored mesh `normals` and `primvars:normals`
+follow Hydra's precedence rules and support indexed constant, uniform, vertex,
+varying, and face-varying interpolation. Normals are transformed correctly for
+non-uniformly scaled meshes and instances before GPU interpolation.
 
 The supported graph subset follows direct image connections (including a
 `normalmap` node) into the surface. General MaterialX procedural graphs, UDIMs,
