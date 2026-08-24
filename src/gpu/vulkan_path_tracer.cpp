@@ -36,8 +36,12 @@ struct GpuMaterial {
     vec4 emissionRoughness;
     vec4 transmissionOpacityIor;
     vec4 transmissionColorThinWalled;
+    vec4 subsurfaceWeightScale;
+    vec4 subsurfaceColor;
+    vec4 subsurfaceRadius;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
+    uvec4 textureIndices2;
 };
 layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial materials[]; };
 layout(std430, set = 0, binding = 7) readonly buffer TextureCoordinates { vec2 texcoords[]; };
@@ -231,12 +235,26 @@ void main()
         vec3 transmissionColor = sampleMaterialTexture(
             material.textureIndices1.z, surfaceUv,
             vec4(material.transmissionColorThinWalled.rgb, 1.0)).rgb;
+        float subsurface = clamp(sampleMaterialTexture(
+            material.textureIndices2.x, surfaceUv,
+            vec4(material.subsurfaceWeightScale.x)).r, 0.0, 1.0);
+        vec3 subsurfaceColor = sampleMaterialTexture(
+            material.textureIndices2.y, surfaceUv,
+            vec4(material.subsurfaceColor.rgb, 1.0)).rgb;
+        vec3 subsurfaceRadius = max(sampleMaterialTexture(
+            material.textureIndices2.z, surfaceUv,
+            vec4(material.subsurfaceRadius.rgb, 1.0)).rgb, vec3(0.001));
+        vec3 subsurfaceAttenuation = exp(-max(material.subsurfaceWeightScale.y, 0.0) /
+                                         subsurfaceRadius);
+        vec3 diffuseColor = mix(baseColor,
+            subsurfaceColor * subsurfaceAttenuation, subsurface);
 
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
-        float nDotL = max(dot(normal, sunDirection), 0.0);
-        if (nDotL > 0.0 && !occluded(hit + normal * 0.002, sunDirection)) {
-            radiance += throughput * baseColor * vec3(1.1, 1.0, 0.9) *
-                nDotL * (1.0 - transmission);
+        float wrappedNdotL = max((dot(normal, sunDirection) + 0.5 * subsurface) /
+                                 (1.0 + 0.5 * subsurface), 0.0);
+        if (wrappedNdotL > 0.0 && !occluded(hit + normal * 0.002, sunDirection)) {
+            radiance += throughput * diffuseColor * vec3(1.1, 1.0, 0.9) *
+                wrappedNdotL * (1.0 - transmission);
         }
 
         if (randomFloat(rng) < transmission) {
@@ -259,7 +277,7 @@ void main()
             continue;
         }
 
-        throughput *= baseColor;
+        throughput *= mix(diffuseColor, baseColor, metalness);
         rayOrigin = hit + normal * 0.002;
         if (randomFloat(rng) < metalness) {
             vec3 reflected = reflect(rayDirection, normal);
@@ -299,8 +317,12 @@ struct GpuMaterial {
     std::array<float, 4> emissionRoughness;
     std::array<float, 4> transmissionOpacityIor;
     std::array<float, 4> transmissionColorThinWalled;
+    std::array<float, 4> subsurfaceWeightScale;
+    std::array<float, 4> subsurfaceColor;
+    std::array<float, 4> subsurfaceRadius;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
+    std::array<std::uint32_t, 4> textureIndices2;
 };
 
 struct GpuTexcoord { float u, v; };
@@ -656,8 +678,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v3";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v1";
+        options.generatorVersion = "hdCodex.pathtracer.v4";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v2";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -767,6 +789,10 @@ public:
             {0.0F, 0.0F, 0.0F, 0.5F},
             {0.0F, 1.0F, 1.5F, 0.0F},
             {1.0F, 1.0F, 1.0F, 0.0F},
+            {0.0F, 1.0F, 0.0F, 0.0F},
+            {0.8F, 0.8F, 0.8F, 0.0F},
+            {1.0F, 0.2F, 0.1F, 0.0F},
+            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
         });
@@ -783,6 +809,11 @@ public:
                  material.indexOfRefraction, material.emissionWeight},
                 {material.transmissionColor[0], material.transmissionColor[1],
                  material.transmissionColor[2], material.thinWalled ? 1.0F : 0.0F},
+                {material.subsurface, material.subsurfaceScale, 0.0F, 0.0F},
+                {material.subsurfaceColor[0], material.subsurfaceColor[1],
+                 material.subsurfaceColor[2], 0.0F},
+                {material.subsurfaceRadius[0], material.subsurfaceRadius[1],
+                 material.subsurfaceRadius[2], 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
@@ -790,6 +821,9 @@ public:
                 {textureIndex(material.opacityTexture),
                  textureIndex(material.normalTexture),
                  textureIndex(material.transmissionTexture), kMissingTexture},
+                {textureIndex(material.subsurfaceTexture),
+                 textureIndex(material.subsurfaceColorTexture),
+                 textureIndex(material.subsurfaceRadiusTexture), kMissingTexture},
             });
         }
         for (const SceneMesh& mesh : snapshot->meshes) {

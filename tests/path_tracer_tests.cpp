@@ -47,6 +47,14 @@ try {
         .srgb = true,
         .rgba = {16, 220, 32, 255},
     });
+    scene->textures.push_back({
+        .id = "scatter#raw",
+        .sourcePath = "synthetic",
+        .width = 1,
+        .height = 1,
+        .srgb = false,
+        .rgba = {255, 255, 255, 255},
+    });
     tracer.SetScene(scene);
     Check(tracer.HasGeometry(), "path tracer did not build geometry");
 
@@ -74,6 +82,17 @@ try {
 
     const auto progressive = tracer.Render(camera, width, height, 1);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
+
+    scene->materials.front().subsurfaceColor = {0.02F, 0.05F, 1.0F};
+    scene->materials.front().subsurfaceScale = 0.0F;
+    scene->materials.front().subsurfaceTexture = "scatter#raw";
+    tracer.SetScene(scene);
+    const auto scattered = tracer.Render(camera, width, height, 0);
+    Check(scattered[center + 2] > scattered[center + 1] * 1.5F,
+          "subsurface parameters did not reach the GPU material ABI");
+
+    scene->materials.front().subsurface = 0.0F;
+    scene->materials.front().subsurfaceTexture.clear();
 
     scene->materials.front().opacity = 0.0F;
     tracer.SetScene(scene);
