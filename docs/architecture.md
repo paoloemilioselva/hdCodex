@@ -68,6 +68,10 @@ The default pipeline is:
    source, generator version, compiler version, target environment, and ABI.
 6. Validate the cache header before loading and replace entries atomically.
 
+glslang is embedded and pinned to the same Khronos Vulkan SDK release as the
+headers and loader. Compilation targets Vulkan 1.3 / SPIR-V 1.6; stage, entry
+point, optimization mode, and material ABI are all part of the cache key.
+
 The first supported closure is `standard_surface`, including base color,
 metalness, specular roughness, emission, opacity, and transmission. Unsupported
 closures produce a visible diagnostic material and a Hydra warning rather than

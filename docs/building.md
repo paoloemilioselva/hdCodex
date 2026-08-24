@@ -13,11 +13,10 @@ it and also make the backend portable beyond NVIDIA GPUs.
 
 ## Dependency modes
 
-`HDCODEX_FETCH_DEPENDENCIES=ON` downloads source-buildable dependencies into the
-build directory. Nothing is installed globally. OpenUSD may be supplied with
-`HDCODEX_OPENUSD_ROOT`; the finder accepts both a standard OpenUSD installation
-and a Houdini installation containing `toolkit/include` and
-`custom/houdini/dsolib`.
+`HDCODEX_FETCH_DEPENDENCIES=ON` downloads pinned Vulkan-Headers, volk, Vulkan
+Memory Allocator, and glslang sources beneath `_deps/`. Nothing is installed
+globally. `HDCODEX_OPENUSD_ROOT` must identify a standalone OpenUSD
+installation. This build intentionally never searches a Houdini installation.
 
 The dependency-free core build is useful for cache and scene tests:
 

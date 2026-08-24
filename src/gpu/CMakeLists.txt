@@ -4,9 +4,17 @@ add_library(hdCodexGpu STATIC
 add_library(hdCodex::Gpu ALIAS hdCodexGpu)
 
 target_link_libraries(hdCodexGpu
-  PUBLIC hdCodexProjectOptions
+  PUBLIC hdCodexProjectOptions hdCodex::Core
   PRIVATE volk Vulkan::Headers
 )
+if(HDCODEX_ENABLE_SHADER_COMPILER)
+  target_sources(hdCodexGpu PRIVATE glsl_compiler.cpp)
+  target_link_libraries(hdCodexGpu PRIVATE
+    glslang::glslang
+    glslang::glslang-default-resource-limits
+  )
+  target_compile_definitions(hdCodexGpu PUBLIC HDCODEX_HAS_SHADER_COMPILER=1)
+endif()
 target_include_directories(hdCodexGpu
   PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>

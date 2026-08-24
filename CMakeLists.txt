@@ -10,6 +10,7 @@ include(GNUInstallDirs)
 option(HDCODEX_BUILD_HYDRA_PLUGIN "Build the OpenUSD Hydra render delegate" ON)
 option(HDCODEX_ENABLE_VULKAN "Build the Vulkan hardware ray-tracing backend" ON)
 option(HDCODEX_ENABLE_MATERIALX "Build runtime MaterialX shader generation" ON)
+option(HDCODEX_ENABLE_SHADER_COMPILER "Build the in-process GLSL to SPIR-V compiler" ON)
 option(HDCODEX_FETCH_DEPENDENCIES "Fetch source-buildable dependencies into the build tree" OFF)
 option(HDCODEX_WARNINGS_AS_ERRORS "Treat hdCodex compiler warnings as errors" OFF)
 
