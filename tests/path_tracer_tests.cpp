@@ -74,6 +74,21 @@ try {
 
     const auto progressive = tracer.Render(camera, width, height, 1);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
+
+    scene->materials.front().opacity = 0.0F;
+    tracer.SetScene(scene);
+    const auto cutout = tracer.Render(camera, width, height, 0);
+    Check(cutout[center + 2] > cutout[center + 1],
+          "zero-opacity surface did not reveal the blue environment");
+
+    scene->materials.front().opacity = 1.0F;
+    scene->materials.front().transmission = 1.0F;
+    scene->materials.front().transmissionColor = {1.0F, 0.05F, 0.02F};
+    scene->materials.front().thinWalled = true;
+    tracer.SetScene(scene);
+    const auto transmitted = tracer.Render(camera, width, height, 0);
+    Check(transmitted[center] > transmitted[center + 1] * 2.0F,
+          "thin-walled transmission did not tint the environment");
     std::error_code error;
     std::filesystem::remove_all(cacheRoot, error);
     std::cout << "Vulkan BLAS/TLAS ray-query path trace passed on "

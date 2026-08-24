@@ -25,17 +25,21 @@ struct SceneMaterial {
     std::string id;
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
+    std::array<float, 3> transmissionColor{1.0F, 1.0F, 1.0F};
     float metalness{0.0F};
     float roughness{0.5F};
     float opacity{1.0F};
+    float emissionWeight{0.0F};
     float transmission{0.0F};
     float indexOfRefraction{1.5F};
+    bool thinWalled{false};
     std::string baseColorTexture;
     std::string metalnessTexture;
     std::string roughnessTexture;
     std::string emissionTexture;
     std::string opacityTexture;
     std::string normalTexture;
+    std::string transmissionTexture;
 };
 
 struct SceneTexture {

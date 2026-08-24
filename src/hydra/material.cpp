@@ -56,6 +56,16 @@ float FloatParameter(const HdMaterialNode2& node, const char* name, float fallba
     return fallback;
 }
 
+bool BoolParameter(const HdMaterialNode2& node, const char* name, bool fallback)
+{
+    const auto found = node.parameters.find(TfToken(name));
+    if (found == node.parameters.end()) return fallback;
+    const VtValue& value = found->second;
+    if (value.IsHolding<bool>()) return value.UncheckedGet<bool>();
+    if (value.IsHolding<int>()) return value.UncheckedGet<int>() != 0;
+    return fallback;
+}
+
 std::array<float, 3> ColorParameter(
     const HdMaterialNode2& node, const char* name, std::array<float, 3> fallback)
 {
@@ -239,13 +249,16 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             material.baseColor = ColorParameter(node, "base_color", material.baseColor);
             material.metalness = FloatParameter(node, "metalness", material.metalness);
             material.roughness = FloatParameter(node, "specular_roughness", material.roughness);
-            const float emissionWeight = FloatParameter(node, "emission", 0.0F);
+            material.emissionWeight = FloatParameter(node, "emission", 0.0F);
             material.emission = ColorParameter(node, "emission_color", material.emission);
-            for (float& component : material.emission) component *= emissionWeight;
+            for (float& component : material.emission) component *= material.emissionWeight;
             material.opacity = FloatParameter(node, "opacity", material.opacity);
             material.transmission = FloatParameter(node, "transmission", material.transmission);
+            material.transmissionColor = ColorParameter(
+                node, "transmission_color", material.transmissionColor);
             material.indexOfRefraction = FloatParameter(
                 node, "specular_IOR", material.indexOfRefraction);
+            material.thinWalled = BoolParameter(node, "thin_walled", material.thinWalled);
             material.baseColorTexture = LoadTexture(
                 scene, TextureForInput(network, node, "base_color"), true);
             material.metalnessTexture = LoadTexture(
@@ -258,6 +271,8 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
                 scene, TextureForInput(network, node, "opacity"), false);
             material.normalTexture = LoadTexture(
                 scene, TextureForInput(network, node, "normal"), false);
+            material.transmissionTexture = LoadTexture(
+                scene, TextureForInput(network, node, "transmission_color"), true);
             return material;
         }
         if (type.find("UsdPreviewSurface") != std::string::npos) {
@@ -265,6 +280,7 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             material.metalness = FloatParameter(node, "metallic", material.metalness);
             material.roughness = FloatParameter(node, "roughness", material.roughness);
             material.emission = ColorParameter(node, "emissiveColor", material.emission);
+            material.emissionWeight = 1.0F;
             material.opacity = FloatParameter(node, "opacity", material.opacity);
             material.indexOfRefraction = FloatParameter(node, "ior", material.indexOfRefraction);
             material.baseColorTexture = LoadTexture(

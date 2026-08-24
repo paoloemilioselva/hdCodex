@@ -35,6 +35,7 @@ struct GpuMaterial {
     vec4 baseColorMetalness;
     vec4 emissionRoughness;
     vec4 transmissionOpacityIor;
+    vec4 transmissionColorThinWalled;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
 };
@@ -91,6 +92,24 @@ vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
         : texture(materialTextures[nonuniformEXT(textureIndex)], uv);
 }
 
+vec2 surfaceTextureCoordinates(uint primitive, vec2 barycentrics)
+{
+    vec3 barycentric = vec3(1.0 - barycentrics.x - barycentrics.y,
+                            barycentrics.x, barycentrics.y);
+    vec2 uv0 = texcoords[primitive * 3u + 0u];
+    vec2 uv1 = texcoords[primitive * 3u + 1u];
+    vec2 uv2 = texcoords[primitive * 3u + 2u];
+    return uv0 * barycentric.x + uv1 * barycentric.y + uv2 * barycentric.z;
+}
+
+float surfaceOpacity(uint primitive, vec2 barycentrics)
+{
+    GpuMaterial material = materials[triangleMaterials[primitive]];
+    vec2 uv = surfaceTextureCoordinates(primitive, barycentrics);
+    return clamp(sampleMaterialTexture(material.textureIndices1.x, uv,
+        vec4(material.transmissionOpacityIor.y)).r, 0.0, 1.0);
+}
+
 vec3 applyNormalMap(uint textureIndex, vec2 uv, vec3 geometricNormal,
                     vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2)
 {
@@ -116,9 +135,18 @@ bool occluded(vec3 origin, vec3 direction)
 {
     rayQueryEXT shadow;
     rayQueryInitializeEXT(shadow, scene,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        gl_RayFlagsTerminateOnFirstHitEXT,
         0xff, origin, 0.001, direction, 10000.0);
-    while (rayQueryProceedEXT(shadow)) {}
+    while (rayQueryProceedEXT(shadow)) {
+        if (rayQueryGetIntersectionTypeEXT(shadow, false) ==
+            gl_RayQueryCandidateIntersectionTriangleEXT) {
+            uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(shadow, false);
+            vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(shadow, false);
+            if (surfaceOpacity(primitive, barycentrics) >= 0.5) {
+                rayQueryConfirmIntersectionEXT(shadow);
+            }
+        }
+    }
     return rayQueryGetIntersectionTypeEXT(shadow, true) !=
         gl_RayQueryCommittedIntersectionNoneEXT;
 }
@@ -141,9 +169,19 @@ void main()
     for (int bounce = 0; bounce < 5; ++bounce)
     {
         rayQueryEXT query;
-        rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT,
+        rayQueryInitializeEXT(query, scene, gl_RayFlagsNoneEXT,
             0xff, rayOrigin, 0.001, rayDirection, 10000.0);
-        while (rayQueryProceedEXT(query)) {}
+        while (rayQueryProceedEXT(query)) {
+            if (rayQueryGetIntersectionTypeEXT(query, false) ==
+                gl_RayQueryCandidateIntersectionTriangleEXT) {
+                uint candidate = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+                vec2 candidateBarycentrics =
+                    rayQueryGetIntersectionBarycentricsEXT(query, false);
+                if (randomFloat(rng) <= surfaceOpacity(candidate, candidateBarycentrics)) {
+                    rayQueryConfirmIntersectionEXT(query);
+                }
+            }
+        }
 
         if (rayQueryGetIntersectionTypeEXT(query, true) ==
             gl_RayQueryCommittedIntersectionNoneEXT)
@@ -159,16 +197,15 @@ void main()
         vec3 p0 = positions[i0].xyz;
         vec3 p1 = positions[i1].xyz;
         vec3 p2 = positions[i2].xyz;
-        vec3 normal = normalize(cross(p1 - p0, p2 - p0));
-        if (dot(normal, rayDirection) > 0.0) normal = -normal;
+        vec3 geometricNormal = normalize(cross(p1 - p0, p2 - p0));
+        bool frontFace = dot(geometricNormal, rayDirection) < 0.0;
+        vec3 normal = frontFace ? geometricNormal : -geometricNormal;
 
         vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
-        vec3 barycentric = vec3(1.0 - barycentrics.x - barycentrics.y,
-                                barycentrics.x, barycentrics.y);
         vec2 uv0 = texcoords[primitive * 3u + 0u];
         vec2 uv1 = texcoords[primitive * 3u + 1u];
         vec2 uv2 = texcoords[primitive * 3u + 2u];
-        vec2 surfaceUv = uv0 * barycentric.x + uv1 * barycentric.y + uv2 * barycentric.z;
+        vec2 surfaceUv = surfaceTextureCoordinates(primitive, barycentrics);
 
         float distance = rayQueryGetIntersectionTEXT(query, true);
         vec3 hit = rayOrigin + rayDirection * distance;
@@ -184,12 +221,42 @@ void main()
             vec4(material.emissionRoughness.a)).r, 0.02, 1.0);
         normal = applyNormalMap(material.textureIndices1.y, surfaceUv, normal,
                                 p0, p1, p2, uv0, uv1, uv2);
-        radiance += throughput * material.emissionRoughness.rgb;
+        vec3 emission = material.textureIndices0.w == 0xffffffffu
+            ? material.emissionRoughness.rgb
+            : sampleMaterialTexture(material.textureIndices0.w, surfaceUv, vec4(0.0)).rgb *
+                material.transmissionOpacityIor.w;
+        radiance += throughput * emission;
+
+        float transmission = clamp(material.transmissionOpacityIor.x, 0.0, 1.0);
+        vec3 transmissionColor = sampleMaterialTexture(
+            material.textureIndices1.z, surfaceUv,
+            vec4(material.transmissionColorThinWalled.rgb, 1.0)).rgb;
 
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
         float nDotL = max(dot(normal, sunDirection), 0.0);
         if (nDotL > 0.0 && !occluded(hit + normal * 0.002, sunDirection)) {
-            radiance += throughput * baseColor * vec3(1.1, 1.0, 0.9) * nDotL;
+            radiance += throughput * baseColor * vec3(1.1, 1.0, 0.9) *
+                nDotL * (1.0 - transmission);
+        }
+
+        if (randomFloat(rng) < transmission) {
+            float ior = max(material.transmissionOpacityIor.z, 1.0001);
+            float eta = frontFace ? 1.0 / ior : ior;
+            float cosTheta = min(dot(-rayDirection, normal), 1.0);
+            float r0 = (1.0 - ior) / (1.0 + ior);
+            r0 *= r0;
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+            vec3 refracted = refract(rayDirection, normal, eta);
+            bool totalInternalReflection = dot(refracted, refracted) < 1e-8;
+            bool thinWalled = material.transmissionColorThinWalled.w > 0.5;
+            if (totalInternalReflection || randomFloat(rng) < fresnel) {
+                rayDirection = reflect(rayDirection, normal);
+            } else {
+                rayDirection = thinWalled ? rayDirection : normalize(refracted);
+            }
+            throughput *= transmissionColor;
+            rayOrigin = hit + rayDirection * 0.002;
+            continue;
         }
 
         throughput *= baseColor;
@@ -231,6 +298,7 @@ struct GpuMaterial {
     std::array<float, 4> baseColorMetalness;
     std::array<float, 4> emissionRoughness;
     std::array<float, 4> transmissionOpacityIor;
+    std::array<float, 4> transmissionColorThinWalled;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
 };
@@ -588,8 +656,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v2";
-        options.materialAbi = "hdcodex.pathtracer.textures.v1";
+        options.generatorVersion = "hdCodex.pathtracer.v3";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v1";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -698,6 +766,7 @@ public:
             {0.8F, 0.8F, 0.8F, 0.0F},
             {0.0F, 0.0F, 0.0F, 0.5F},
             {0.0F, 1.0F, 1.5F, 0.0F},
+            {1.0F, 1.0F, 1.0F, 0.0F},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
         });
@@ -711,14 +780,16 @@ public:
                 {material.emission[0], material.emission[1], material.emission[2],
                  material.roughness},
                 {material.transmission, material.opacity,
-                 material.indexOfRefraction, 0.0F},
+                 material.indexOfRefraction, material.emissionWeight},
+                {material.transmissionColor[0], material.transmissionColor[1],
+                 material.transmissionColor[2], material.thinWalled ? 1.0F : 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
                  textureIndex(material.emissionTexture)},
                 {textureIndex(material.opacityTexture),
                  textureIndex(material.normalTexture),
-                 kMissingTexture, kMissingTexture},
+                 textureIndex(material.transmissionTexture), kMissingTexture},
             });
         }
         for (const SceneMesh& mesh : snapshot->meshes) {
@@ -779,7 +850,7 @@ public:
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
         geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geometry.flags = 0;
         geometry.geometry.triangles = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
             .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
