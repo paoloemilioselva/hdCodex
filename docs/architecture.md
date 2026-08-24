@@ -63,7 +63,7 @@ The default pipeline is:
 1. Canonicalize the MaterialX document/network and generator options.
 2. Generate Vulkan GLSL using MaterialX's Vulkan shader generator.
 3. Adapt the generated surface function to the path tracer's BSDF ABI.
-4. Compile GLSL to SPIR-V with shaderc.
+4. Compile GLSL to SPIR-V with glslang.
 5. Cache source, reflection metadata, and SPIR-V under a SHA-256 key containing
    source, generator version, compiler version, target environment, and ABI.
 6. Validate the cache header before loading and replace entries atomically.
@@ -79,4 +79,3 @@ Scene mutation and publication are protected independently. GPU submission is
 owned by one render worker. Shader compilation uses a bounded worker queue and
 deduplicates concurrent requests for the same cache key. Stopping a delegate
 joins the worker before GPU resources or render buffers are destroyed.
-

@@ -35,6 +35,9 @@ HdCodexRenderDelegate::~HdCodexRenderDelegate() = default;
 
 void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 {
+#if defined(HDCODEX_HAS_VULKAN)
+    _vulkan = std::make_unique<hdcodex::VulkanContext>();
+#endif
     _renderParam = std::make_unique<HdCodexRenderParam>(&_scene);
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
     for (const auto& [key, value] : settingsMap) {
@@ -119,4 +122,3 @@ HdAovDescriptor HdCodexRenderDelegate::GetDefaultAovDescriptor(const TfToken& na
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE
-

@@ -22,6 +22,7 @@ add_library(hdCodex SHARED
 target_link_libraries(hdCodex
   PRIVATE
     hdCodex::Core
+    $<$<BOOL:${HDCODEX_ENABLE_VULKAN}>:hdCodex::Gpu>
     hd
     hdx
     usdImaging
@@ -33,6 +34,7 @@ target_compile_definitions(hdCodex
     HDCODEX_EXPORTS
     NOMINMAX
     HDCODEX_SHADER_CACHE_DIR="${HDCODEX_SHADER_CACHE_DIR}"
+    $<$<BOOL:${HDCODEX_ENABLE_VULKAN}>:HDCODEX_HAS_VULKAN>
 )
 set_target_properties(hdCodex PROPERTIES
   OUTPUT_NAME hdCodex

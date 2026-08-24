@@ -6,7 +6,7 @@
 - A C++20 compiler
 - OpenUSD with imaging/Hydra enabled
 - A Vulkan 1.2 driver with ray-query support for GPU rendering
-- MaterialX and shaderc for runtime material compilation
+- MaterialX and glslang for runtime material compilation
 
 CUDA is not required. Vulkan ray queries use RT hardware where the driver exposes
 it and also make the backend portable beyond NVIDIA GPUs.
@@ -27,15 +27,15 @@ cmake --build --preset core-only
 ctest --preset core-only
 ```
 
-Complete configuration using a Houdini OpenUSD distribution:
+Complete configuration using the standalone OpenUSD 26.03 distribution:
 
 ```powershell
 cmake --preset dev `
-  -DHDCODEX_OPENUSD_ROOT="C:/Program Files/Side Effects Software/Houdini 21.0.631" `
+  -DHDCODEX_OPENUSD_ROOT="C:/dev/usd-26.03" `
   -DHDCODEX_FETCH_DEPENDENCIES=ON
 cmake --build --preset dev
 ```
 
-Build and runtime artifacts remain beneath `build/`. The generated plugin
+Fetched upstream dependencies remain beneath `_deps/`; build and runtime
+artifacts remain beneath `build/`. The generated plugin
 resource tree can be added to `PXR_PLUGINPATH_NAME` after installation.
-

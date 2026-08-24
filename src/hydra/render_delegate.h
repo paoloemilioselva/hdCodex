@@ -3,6 +3,9 @@
 #include "api.h"
 
 #include "hdcodex/core/versioned_scene.h"
+#if defined(HDCODEX_HAS_VULKAN)
+#include "hdcodex/gpu/vulkan_context.h"
+#endif
 #include "pxr/imaging/hd/renderDelegate.h"
 
 #include <memory>
@@ -46,7 +49,9 @@ private:
     hdcodex::VersionedScene _scene;
     std::unique_ptr<HdCodexRenderParam> _renderParam;
     HdResourceRegistrySharedPtr _resourceRegistry;
+#if defined(HDCODEX_HAS_VULKAN)
+    std::unique_ptr<hdcodex::VulkanContext> _vulkan;
+#endif
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
-

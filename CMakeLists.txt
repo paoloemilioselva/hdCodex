@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(hdCodex VERSION 0.1.0 LANGUAGES CXX)
+project(hdCodex VERSION 0.1.0 LANGUAGES C CXX)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -37,6 +37,11 @@ else()
 endif()
 
 add_subdirectory(src/core)
+
+if(HDCODEX_ENABLE_VULKAN)
+  include(cmake/Dependencies.cmake)
+  add_subdirectory(src/gpu)
+endif()
 
 if(HDCODEX_BUILD_HYDRA_PLUGIN)
   add_subdirectory(src/hydra)
