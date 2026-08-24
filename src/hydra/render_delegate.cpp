@@ -7,6 +7,10 @@
 #include "render_param.h"
 #include "render_pass.h"
 
+#if defined(HDCODEX_HAS_MATERIALX)
+#include "hdcodex/materialx/materialx_compiler.h"
+#endif
+
 #include "pxr/base/gf/vec4f.h"
 #include "pxr/imaging/hd/instancer.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
@@ -38,7 +42,11 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 #if defined(HDCODEX_HAS_VULKAN)
     _vulkan = std::make_unique<hdcodex::VulkanContext>();
 #endif
-    _renderParam = std::make_unique<HdCodexRenderParam>(&_scene);
+    _shaderCache = std::make_unique<hdcodex::ShaderCache>(HDCODEX_SHADER_CACHE_DIR);
+#if defined(HDCODEX_HAS_MATERIALX)
+    _materialCompiler = std::make_unique<hdcodex::MaterialXCompiler>(*_shaderCache);
+#endif
+    _renderParam = std::make_unique<HdCodexRenderParam>(&_scene, _materialCompiler.get());
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
     for (const auto& [key, value] : settingsMap) {
         HdRenderDelegate::SetRenderSetting(key, value);

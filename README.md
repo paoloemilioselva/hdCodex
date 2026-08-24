@@ -13,10 +13,11 @@ outside the OpenUSD source tree.
 
 ## Status
 
-This repository is under active development. The first milestone provides the
-plugin/resource lifecycle, scene synchronization, progressive accumulation,
-runtime shader cache, and a Vulkan path-tracing backend for triangle meshes and
-MaterialX `standard_surface` materials.
+This repository is under active development. The current milestone provides a
+loadable Hydra plugin, scene/AOV adapters, a hardware ray-query Vulkan device,
+an in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
+generation. BLAS/TLAS construction and the progressive path integration pass
+are the next renderer milestone; the current render pass only clears AOVs.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
 phases, and [Building](docs/building.md) for local dependency setup.
@@ -33,4 +34,3 @@ ctest --preset core-only
 
 For the complete delegate, configure an OpenUSD install and enable the optional
 dependency bootstrap described in `docs/building.md`.
-

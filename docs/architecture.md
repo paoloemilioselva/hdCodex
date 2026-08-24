@@ -72,6 +72,12 @@ glslang is embedded and pinned to the same Khronos Vulkan SDK release as the
 headers and loader. Compilation targets Vulkan 1.3 / SPIR-V 1.6; stage, entry
 point, optimization mode, and material ABI are all part of the cache key.
 
+OpenUSD 26.03 contains MaterialX 1.39.3. Its Vulkan generator emits individually
+located stage connector variables but retains the desktop-GLSL `vd.` instance
+prefix in expressions. The compatibility adapter removes only this stale
+prefix before glslang validation. It can be deleted when the standalone OpenUSD
+distribution moves to a MaterialX version with the corrected generator.
+
 The first supported closure is `standard_surface`, including base color,
 metalness, specular roughness, emission, opacity, and transmission. Unsupported
 closures produce a visible diagnostic material and a Hydra warning rather than

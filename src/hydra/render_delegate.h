@@ -3,12 +3,17 @@
 #include "api.h"
 
 #include "hdcodex/core/versioned_scene.h"
+#include "hdcodex/core/shader_cache.h"
 #if defined(HDCODEX_HAS_VULKAN)
 #include "hdcodex/gpu/vulkan_context.h"
 #endif
 #include "pxr/imaging/hd/renderDelegate.h"
 
 #include <memory>
+
+namespace hdcodex {
+class MaterialXCompiler;
+}
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -47,6 +52,8 @@ private:
     void Initialize(const HdRenderSettingsMap& settingsMap);
 
     hdcodex::VersionedScene _scene;
+    std::unique_ptr<hdcodex::ShaderCache> _shaderCache;
+    std::unique_ptr<hdcodex::MaterialXCompiler> _materialCompiler;
     std::unique_ptr<HdCodexRenderParam> _renderParam;
     HdResourceRegistrySharedPtr _resourceRegistry;
 #if defined(HDCODEX_HAS_VULKAN)

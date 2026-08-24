@@ -1,14 +1,3 @@
-list(PREPEND CMAKE_PREFIX_PATH "${HDCODEX_OPENUSD_ROOT}")
-set(OpenSubdiv_DIR "${HDCODEX_OPENUSD_ROOT}/lib/cmake/OpenSubdiv" CACHE PATH "" FORCE)
-set(MaterialX_DIR "${HDCODEX_OPENUSD_ROOT}/lib/cmake/MaterialX" CACHE PATH "" FORCE)
-set(Imath_DIR "${HDCODEX_OPENUSD_ROOT}/lib/cmake/Imath" CACHE PATH "" FORCE)
-
-find_package(OpenGL REQUIRED)
-find_package(pxr CONFIG REQUIRED
-  PATHS "${HDCODEX_OPENUSD_ROOT}"
-  NO_DEFAULT_PATH
-)
-
 add_library(hdCodex SHARED
   camera.cpp
   material.cpp
@@ -23,6 +12,7 @@ target_link_libraries(hdCodex
   PRIVATE
     hdCodex::Core
     $<$<BOOL:${HDCODEX_ENABLE_VULKAN}>:hdCodex::Gpu>
+    $<$<BOOL:${HDCODEX_ENABLE_MATERIALX}>:hdCodex::MaterialX>
     hd
     hdx
     usdImaging
@@ -35,6 +25,7 @@ target_compile_definitions(hdCodex
     NOMINMAX
     HDCODEX_SHADER_CACHE_DIR="${HDCODEX_SHADER_CACHE_DIR}"
     $<$<BOOL:${HDCODEX_ENABLE_VULKAN}>:HDCODEX_HAS_VULKAN>
+    $<$<BOOL:${HDCODEX_ENABLE_MATERIALX}>:HDCODEX_HAS_MATERIALX>
 )
 set_target_properties(hdCodex PROPERTIES
   OUTPUT_NAME hdCodex

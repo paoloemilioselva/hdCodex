@@ -137,7 +137,7 @@ SpirvModule GlslCompiler::Compile(
     const std::string compilerVersion = Version();
     const ShaderCacheKeyInput keyInput{
         .source = source,
-        .generatorVersion = "hdCodex.glsl.v1",
+        .generatorVersion = options.generatorVersion,
         .compilerVersion = compilerVersion,
         .targetEnvironment = "vulkan1.3-spirv1.6",
         .materialAbi = options.materialAbi,

@@ -44,6 +44,17 @@ if(HDCODEX_ENABLE_VULKAN)
   add_subdirectory(src/gpu)
 endif()
 
+if(HDCODEX_BUILD_HYDRA_PLUGIN OR HDCODEX_ENABLE_MATERIALX)
+  include(cmake/OpenUSD.cmake)
+endif()
+
+if(HDCODEX_ENABLE_MATERIALX)
+  if(NOT HDCODEX_ENABLE_VULKAN OR NOT HDCODEX_ENABLE_SHADER_COMPILER)
+    message(FATAL_ERROR "MaterialX compilation requires the Vulkan shader compiler")
+  endif()
+  add_subdirectory(src/materialx)
+endif()
+
 if(HDCODEX_BUILD_HYDRA_PLUGIN)
   add_subdirectory(src/hydra)
 endif()

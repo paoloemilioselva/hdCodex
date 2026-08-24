@@ -25,6 +25,7 @@ struct GlslCompileOptions {
     bool generateDebugInfo = false;
     bool optimizeForSize = false;
     std::string entryPoint = "main";
+    std::string generatorVersion = "hdCodex.glsl.v1";
     std::string materialAbi = "hdcodex.bsdf.v1";
 };
 
