@@ -1,0 +1,82 @@
+# Architecture
+
+## Goals
+
+- A loadable Hydra render delegate that uses only public OpenUSD headers.
+- Progressive, interruptible GPU path tracing with hardware acceleration.
+- MaterialX code generation and runtime compilation with deterministic caching.
+- No process-global renderer singleton: each `HdRenderIndex` owns its delegate,
+  render parameter, scene, device, and render thread.
+- Dependency injection at the GPU boundary so scene synchronization and cache
+  behavior can be tested without a GPU or OpenUSD runtime.
+
+## Namespace and ABI boundary
+
+Hydra-discoverable adapter classes are named `pxr::HdCodex*` and use a dedicated
+`HDCODEX_API` export macro. Renderer implementation classes use `hdcodex::*`.
+The project never includes private OpenUSD headers or references symbols from
+`hdEmbree`; this is the key constraint that allows an out-of-tree build.
+
+## Data flow
+
+```text
+Hydra scene delegates
+        |
+        v
+HdCodex mesh/material/camera adapters -- Sync() --> hdcodex::Scene
+                                                    |
+MaterialX network --> source generator --> cache -->| GPU material programs
+                                                    v
+                                           VulkanPathTracer
+                                             BLAS / TLAS
+                                                    |
+                                       progressive accumulation
+                                                    v
+                                      HdCodexRenderBuffer
+```
+
+Hydra `Sync()` calls only update immutable scene snapshots and dirty-version
+counters. `CommitResources()` publishes a coherent snapshot. The render pass
+starts or restarts progressive rendering when the snapshot, camera, AOV layout,
+or render settings version changes.
+
+## GPU backend
+
+The primary backend is Vulkan 1.2 plus:
+
+- `VK_KHR_acceleration_structure`
+- `VK_KHR_ray_query`
+- `VK_KHR_buffer_device_address`
+- `VK_KHR_deferred_host_operations`
+- `VK_EXT_descriptor_indexing`
+
+A compute shader controls the path loop and invokes ray queries for traversal.
+This keeps the renderer's integrator and material dispatch explicit while using
+vendor RT hardware. A BLAS is cached per topology; the TLAS is rebuilt or updated
+for transform/visibility changes. Accumulation resets only for changes that can
+affect the image.
+
+## MaterialX compilation
+
+The default pipeline is:
+
+1. Canonicalize the MaterialX document/network and generator options.
+2. Generate Vulkan GLSL using MaterialX's Vulkan shader generator.
+3. Adapt the generated surface function to the path tracer's BSDF ABI.
+4. Compile GLSL to SPIR-V with shaderc.
+5. Cache source, reflection metadata, and SPIR-V under a SHA-256 key containing
+   source, generator version, compiler version, target environment, and ABI.
+6. Validate the cache header before loading and replace entries atomically.
+
+The first supported closure is `standard_surface`, including base color,
+metalness, specular roughness, emission, opacity, and transmission. Unsupported
+closures produce a visible diagnostic material and a Hydra warning rather than
+silently changing appearance.
+
+## Threading
+
+Scene mutation and publication are protected independently. GPU submission is
+owned by one render worker. Shader compilation uses a bounded worker queue and
+deduplicates concurrent requests for the same cache key. Stopping a delegate
+joins the worker before GPU resources or render buffers are destroyed.
+

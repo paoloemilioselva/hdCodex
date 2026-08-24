@@ -1,0 +1,23 @@
+# CMake and compiler output
+/build/
+/out/
+/_deps/
+/install/
+/CMakeUserPresets.json
+/.vs/
+/.vscode/
+*.user
+*.suo
+*.pdb
+*.ilk
+
+# Runtime caches and generated output
+/.cache/
+/shader-cache/
+*.exr
+*.png
+
+# Python helpers used by dependency builds
+__pycache__/
+*.pyc
+

@@ -1,0 +1,50 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "core-only",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/core-only",
+      "cacheVariables": {
+        "HDCODEX_BUILD_HYDRA_PLUGIN": "OFF",
+        "HDCODEX_ENABLE_VULKAN": "OFF",
+        "HDCODEX_ENABLE_MATERIALX": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "core-only",
+      "configurePreset": "core-only"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core-only",
+      "configurePreset": "core-only",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
+
