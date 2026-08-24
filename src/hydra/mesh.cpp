@@ -7,6 +7,8 @@
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/smoothNormals.h"
+#include "pxr/imaging/hd/vertexAdjacency.h"
 #include "pxr/base/gf/vec2d.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3d.h"
@@ -405,11 +407,17 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 : TriangulateTextureCoordinates(
                     topology, id, triangles, primitiveParams, texcoords,
                     texcoordIndices, texcoordInterpolation);
-            const VtVec3fArray cornerNormals = normals.empty()
-                ? VtVec3fArray{}
-                : TriangulateNormals(
-                    topology, id, triangles, primitiveParams, normals,
-                    normalIndices, normalInterpolation);
+            if (normals.empty()) {
+                Hd_VertexAdjacency adjacency;
+                adjacency.BuildAdjacencyTable(&topology);
+                normals = Hd_SmoothNormals::ComputeSmoothNormals(
+                    &adjacency, static_cast<int>(points.size()), points.cdata());
+                normalIndices.clear();
+                normalInterpolation = HdInterpolationVertex;
+            }
+            const VtVec3fArray cornerNormals = TriangulateNormals(
+                topology, id, triangles, primitiveParams, normals,
+                normalIndices, normalInterpolation);
 
             hdcodex::SceneMesh mesh;
             mesh.id = id.GetString();
