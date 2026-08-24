@@ -46,6 +46,7 @@ struct GpuMaterial {
 layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial materials[]; };
 layout(std430, set = 0, binding = 7) readonly buffer TextureCoordinates { vec2 texcoords[]; };
 layout(set = 0, binding = 8) uniform sampler2D materialTextures[256];
+layout(std430, set = 0, binding = 9) readonly buffer ShadingNormals { vec4 shadingNormals[]; };
 layout(std140, set = 0, binding = 4) uniform CameraBlock
 {
     vec4 origin;
@@ -135,6 +136,18 @@ vec3 applyNormalMap(uint textureIndex, vec2 uv, vec3 geometricNormal,
     return dot(result, geometricNormal) < 0.0 ? -result : result;
 }
 
+vec3 surfaceShadingNormal(uint primitive, vec2 barycentrics, vec3 geometricNormal)
+{
+    vec3 barycentric = vec3(1.0 - barycentrics.x - barycentrics.y,
+                            barycentrics.x, barycentrics.y);
+    vec3 result = shadingNormals[primitive * 3u + 0u].xyz * barycentric.x +
+                  shadingNormals[primitive * 3u + 1u].xyz * barycentric.y +
+                  shadingNormals[primitive * 3u + 2u].xyz * barycentric.z;
+    if (dot(result, result) < 1e-12) return geometricNormal;
+    result = normalize(result);
+    return dot(result, geometricNormal) < 0.0 ? -result : result;
+}
+
 bool occluded(vec3 origin, vec3 direction)
 {
     rayQueryEXT shadow;
@@ -203,9 +216,12 @@ void main()
         vec3 p2 = positions[i2].xyz;
         vec3 geometricNormal = normalize(cross(p1 - p0, p2 - p0));
         bool frontFace = dot(geometricNormal, rayDirection) < 0.0;
-        vec3 normal = frontFace ? geometricNormal : -geometricNormal;
+        vec3 orientedGeometricNormal = frontFace ? geometricNormal : -geometricNormal;
 
         vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
+        vec3 authoredNormal = surfaceShadingNormal(
+            primitive, barycentrics, geometricNormal);
+        vec3 normal = frontFace ? authoredNormal : -authoredNormal;
         vec2 uv0 = texcoords[primitive * 3u + 0u];
         vec2 uv1 = texcoords[primitive * 3u + 1u];
         vec2 uv2 = texcoords[primitive * 3u + 2u];
@@ -252,7 +268,8 @@ void main()
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
         float wrappedNdotL = max((dot(normal, sunDirection) + 0.5 * subsurface) /
                                  (1.0 + 0.5 * subsurface), 0.0);
-        if (wrappedNdotL > 0.0 && !occluded(hit + normal * 0.002, sunDirection)) {
+        if (wrappedNdotL > 0.0 &&
+            !occluded(hit + orientedGeometricNormal * 0.002, sunDirection)) {
             radiance += throughput * diffuseColor * vec3(1.1, 1.0, 0.9) *
                 wrappedNdotL * (1.0 - transmission);
         }
@@ -278,7 +295,7 @@ void main()
         }
 
         throughput *= mix(diffuseColor, baseColor, metalness);
-        rayOrigin = hit + normal * 0.002;
+        rayOrigin = hit + orientedGeometricNormal * 0.002;
         if (randomFloat(rng) < metalness) {
             vec3 reflected = reflect(rayDirection, normal);
             rayDirection = normalize(mix(reflected, cosineHemisphere(normal, rng),
@@ -326,6 +343,8 @@ struct GpuMaterial {
 };
 
 struct GpuTexcoord { float u, v; };
+
+using GpuNormal = GpuVertex;
 
 struct CameraUniform {
     std::array<float, 4> origin;
@@ -634,8 +653,10 @@ public:
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 kMaxMaterialTextures, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         };
-        std::array<VkDescriptorBindingFlags, 9> bindingFlags{};
+        std::array<VkDescriptorBindingFlags, 10> bindingFlags{};
         bindingFlags[8] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
         const VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -652,7 +673,7 @@ public:
               "vkCreateDescriptorSetLayout");
         const std::array poolSizes = {
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                  kMaxMaterialTextures},
@@ -678,7 +699,7 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v4";
+        options.generatorVersion = "hdCodex.pathtracer.v5";
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v2";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
@@ -735,6 +756,7 @@ public:
         DestroyBuffer(triangleMaterialBuffer);
         DestroyBuffer(materialBuffer);
         DestroyBuffer(texcoordBuffer);
+        DestroyBuffer(normalBuffer);
         for (Texture& texture : textures) DestroyTexture(texture);
         textures.clear();
         geometryReady = false;
@@ -769,6 +791,7 @@ public:
         std::vector<std::uint32_t> indices;
         std::vector<std::uint32_t> triangleMaterials;
         std::vector<GpuTexcoord> texcoords;
+        std::vector<GpuNormal> normals;
         std::vector<GpuMaterial> materials;
         std::map<std::string, std::uint32_t, std::less<>> textureIndices;
         const std::size_t textureCount = std::min<std::size_t>(
@@ -849,6 +872,12 @@ public:
                             ? GpuTexcoord{mesh.texcoords[uvOffset],
                                           mesh.texcoords[uvOffset + 1U]}
                             : GpuTexcoord{0.0F, 0.0F});
+                        const std::size_t normalOffset = (triangle + corner) * 3U;
+                        normals.push_back(normalOffset + 2U < mesh.normals.size()
+                            ? GpuNormal{mesh.normals[normalOffset],
+                                        mesh.normals[normalOffset + 1U],
+                                        mesh.normals[normalOffset + 2U], 0.0F}
+                            : GpuNormal{0.0F, 0.0F, 0.0F, 0.0F});
                     }
                 }
             }
@@ -880,6 +909,11 @@ public:
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
         std::memcpy(texcoordBuffer.mapped, texcoords.data(),
                     static_cast<std::size_t>(texcoordBuffer.size));
+        normalBuffer = CreateBuffer(normals.size() * sizeof(GpuNormal),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
+        std::memcpy(normalBuffer.mapped, normals.data(),
+                    static_cast<std::size_t>(normalBuffer.size));
 
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -1007,7 +1041,9 @@ public:
             materialBuffer.handle, 0, materialBuffer.size};
         const VkDescriptorBufferInfo texcoordInfo{
             texcoordBuffer.handle, 0, texcoordBuffer.size};
-        std::array<VkWriteDescriptorSet, 9> writes{};
+        const VkDescriptorBufferInfo normalInfo{
+            normalBuffer.handle, 0, normalBuffer.size};
+        std::array<VkWriteDescriptorSet, 10> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &accelerationWrite,
             descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
         const std::array infos = {&outputInfo, &vertexInfo, &indexInfo};
@@ -1024,6 +1060,8 @@ public:
             6, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &materialInfo, nullptr};
         writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
             7, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &texcoordInfo, nullptr};
+        writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &normalInfo, nullptr};
 
         std::vector<VkDescriptorImageInfo> imageInfos;
         imageInfos.reserve(textures.size());
@@ -1034,12 +1072,12 @@ public:
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             });
         }
-        std::uint32_t writeCount = 8;
+        std::uint32_t writeCount = 9;
         if (!imageInfos.empty()) {
-            writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
                 8, 0, static_cast<std::uint32_t>(imageInfos.size()),
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos.data(), nullptr, nullptr};
-            writeCount = 9;
+            writeCount = 10;
         }
         vkUpdateDescriptorSets(device, writeCount,
                                writes.data(), 0, nullptr);
@@ -1095,6 +1133,7 @@ public:
     Buffer triangleMaterialBuffer;
     Buffer materialBuffer;
     Buffer texcoordBuffer;
+    Buffer normalBuffer;
     Buffer blasStorage;
     Buffer tlasStorage;
     VkAccelerationStructureKHR blas{VK_NULL_HANDLE};

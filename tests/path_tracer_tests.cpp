@@ -83,6 +83,17 @@ try {
     const auto progressive = tracer.Render(camera, width, height, 1);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
 
+    scene->meshes.front().normals = {
+        0.6F, 0.85F, 0.35F,
+        0.6F, 0.85F, 0.35F,
+        0.6F, 0.85F, 0.35F,
+    };
+    tracer.SetScene(scene);
+    const auto authoredNormals = tracer.Render(camera, width, height, 0);
+    Check(authoredNormals[center + 1] > pixels[center + 1] * 1.4F,
+          "authored mesh normals did not affect GPU shading");
+    scene->meshes.front().normals.clear();
+
     scene->materials.front().subsurfaceColor = {0.02F, 0.05F, 1.0F};
     scene->materials.front().subsurfaceScale = 0.0F;
     scene->materials.front().subsurfaceTexture = "scatter#raw";

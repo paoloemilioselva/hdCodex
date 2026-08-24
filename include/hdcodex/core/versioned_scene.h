@@ -18,6 +18,9 @@ struct SceneMesh {
     /// Two floats for every triangulated face corner. Keeping UVs in corner
     /// order preserves Hydra face-varying seams without duplicating positions.
     std::vector<float> texcoords;
+    /// Three floats for every triangulated face corner. A zero vector requests
+    /// the geometric face-normal fallback in the path tracer.
+    std::vector<float> normals;
     std::string materialId;
 };
 

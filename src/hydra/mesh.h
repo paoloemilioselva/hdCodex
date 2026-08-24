@@ -33,6 +33,9 @@ private:
     VtVec2fArray _texcoords;
     VtIntArray _texcoordIndices;
     HdInterpolation _texcoordInterpolation{HdInterpolationConstant};
+    VtVec3fArray _normals;
+    VtIntArray _normalIndices;
+    HdInterpolation _normalInterpolation{HdInterpolationConstant};
     GfMatrix4d _transform{1.0};
     bool _visible{true};
 };
