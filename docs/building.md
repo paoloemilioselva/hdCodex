@@ -8,6 +8,9 @@
 - A Vulkan 1.3 driver with ray-query support for GPU rendering
 - MaterialX and glslang for runtime material compilation
 
+Texture decoding uses OpenUSD's public Hio API and installed image plugins, so
+no Houdini image libraries or separately versioned image dependency is used.
+
 CUDA is not required. Vulkan ray queries use RT hardware where the driver exposes
 it and also make the backend portable beyond NVIDIA GPUs.
 
@@ -39,8 +42,8 @@ Fetched upstream dependencies remain beneath `_deps/`; build and runtime
 artifacts remain beneath `build/`. The generated plugin
 resource tree can be added to `PXR_PLUGINPATH_NAME` after installation.
 
-`setup_usd_env.bat` is the single runtime environment used by
-`launch_codex.bat`, `validate_usd.bat`, and `render_test.bat`. It selects the standalone OpenUSD
-plugins, libraries, and Python 3.12 runtime. MaterialX discovery remains owned
+`setup_usd_env.bat` is the single environment used by `compile.bat`,
+`launch_codex.bat`, `validate_usd.bat`, and `render_test.bat`. It selects the
+standalone OpenUSD plugins, libraries, and Python 3.12 runtime. MaterialX discovery remains owned
 by OpenUSD's `hdMtlx` configuration, avoiding duplicate standard-library
 imports. No Houdini path is appended.

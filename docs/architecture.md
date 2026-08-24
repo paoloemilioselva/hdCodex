@@ -25,7 +25,9 @@ Hydra scene delegates
         v
 HdCodex mesh/material/camera adapters -- Sync() --> hdcodex::Scene
                                                     |
-MaterialX network --> source generator --> cache -->| GPU material programs
+MaterialX network --> source generator --> cache -->| compiled stage modules
+       |                                            |
+       +--> surface/image lowering + Hio textures ->| compute material ABI
                                                     v
                                            VulkanPathTracer
                                              BLAS / TLAS
@@ -52,9 +54,9 @@ The primary backend is Vulkan 1.3 plus:
 
 A compute shader controls the path loop and invokes ray queries for traversal.
 This keeps the renderer's integrator and material dispatch explicit while using
-vendor RT hardware. A BLAS is cached per topology; the TLAS is rebuilt or updated
-for transform/visibility changes. Accumulation resets only for changes that can
-affect the image.
+vendor RT hardware. The current implementation flattens visible world-space
+meshes into one BLAS and builds a one-instance TLAS whenever the published scene
+changes. Accumulation resets for scene, camera, or output-size changes.
 
 The initial integrator traces up to five diffuse bounces, samples an analytic
 sky, performs explicit sun shadow queries, accumulates one stochastic sample
@@ -67,13 +69,15 @@ performance optimization.
 
 The default pipeline is:
 
-1. Canonicalize the MaterialX document/network and generator options.
+1. Build a MaterialX document from the composed Hydra network.
 2. Generate Vulkan GLSL using MaterialX's Vulkan shader generator.
-3. Adapt the generated surface function to the path tracer's BSDF ABI.
-4. Compile GLSL to SPIR-V with glslang.
-5. Cache source, reflection metadata, and SPIR-V under a SHA-256 key containing
-   source, generator version, compiler version, target environment, and ABI.
-6. Validate the cache header before loading and replace entries atomically.
+3. Compile the generated raster stages to SPIR-V with glslang and cache them
+   under a SHA-256 key containing source, generator/compiler versions, target,
+   and ABI.
+4. Separately lower supported Standard/Preview Surface parameters and connected
+   image nodes into the path tracer's compute material ABI.
+5. Decode referenced images through Hio and upload them to descriptor-indexed
+   Vulkan images with sRGB/raw formats selected per input role.
 
 glslang is embedded and pinned to the same Khronos Vulkan SDK release as the
 headers and loader. Compilation targets Vulkan 1.3 / SPIR-V 1.6; stage, entry
@@ -85,17 +89,25 @@ prefix in expressions. The compatibility adapter removes only this stale
 prefix before glslang validation. It can be deleted when the standalone OpenUSD
 distribution moves to a MaterialX version with the corrected generator.
 
-The first GPU BSDF binding supports constant `standard_surface` and Preview
-Surface base color, metalness, specular roughness, and emission values. Hydra
-materials retain the complete generated MaterialX stage modules. UV primvars,
-image descriptors, opacity/transmission, and callable integration of the
-remaining generated closure interface are still in progress. Unsupported
-closures produce a visible diagnostic material and a Hydra warning rather than
-silently changing appearance.
+The GPU BSDF binding supports constant and image-driven `standard_surface` and
+Preview Surface base color, metalness, specular roughness, emission, opacity,
+tangent-space normals, and transmission. Indexed and face-varying UVs are
+triangulated in face-corner order. Images are normalized to RGBA8, uploaded as
+sRGB or raw Vulkan images, and accessed through a partially-bound descriptor
+array currently capped at 256 textures. Opacity participates in primary and
+shadow ray-query candidate confirmation. Transmission supports color,
+IOR/Fresnel refraction, and thin-walled surfaces.
+
+Hydra materials retain the complete generated MaterialX raster-stage modules.
+Vulkan does not make a fragment-stage function directly callable from a compute
+shader, so hdCodex separately lowers the supported graph subset into its compute
+ABI. Arbitrary procedural nodes, UDIMs, texture transforms, subsurface, coat,
+sheen, and a general MaterialX-to-path-tracer callable ABI are not implemented.
 
 ## Threading
 
-Scene mutation and publication are protected independently. GPU submission is
-owned by one render worker. Shader compilation uses a bounded worker queue and
-deduplicates concurrent requests for the same cache key. Stopping a delegate
-joins the worker before GPU resources or render buffers are destroyed.
+Scene mutation and publication are mutex-protected. Hydra executes GPU work on
+the render-pass thread, and the current backend waits for each compute
+submission before copying its host-visible color buffer. Persistent asynchronous
+command buffers, GPU-only accumulation, per-mesh BLAS reuse, and overlapped
+readback are the next performance milestone.
