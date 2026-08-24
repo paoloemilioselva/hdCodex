@@ -81,7 +81,11 @@ HdRprim* HdCodexRenderDelegate::CreateRprim(const TfToken& typeId, const SdfPath
     return typeId == HdPrimTypeTokens->mesh ? new HdCodexMesh(rprimId) : nullptr;
 }
 
-void HdCodexRenderDelegate::DestroyRprim(HdRprim* rprim) { delete rprim; }
+void HdCodexRenderDelegate::DestroyRprim(HdRprim* rprim)
+{
+    if (rprim) _scene.RemoveMesh(rprim->GetId().GetString());
+    delete rprim;
+}
 
 HdSprim* HdCodexRenderDelegate::CreateSprim(const TfToken& typeId, const SdfPath& sprimId)
 {

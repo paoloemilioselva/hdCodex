@@ -3,6 +3,7 @@
 #include "render_param.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -22,12 +23,17 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
 {
     const SdfPath& id = GetId();
     bool changed = false;
+    VtVec3fArray points;
+    HdMeshTopology topology;
+    GfMatrix4d transform;
+    bool visible = true;
+    SdfPath materialId;
     {
         const std::scoped_lock lock(_mutex);
         if (HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->points)) {
-            const VtValue points = GetPoints(sceneDelegate);
-            if (points.IsHolding<VtVec3fArray>()) {
-                _points = points.UncheckedGet<VtVec3fArray>();
+            const VtValue pointsValue = GetPoints(sceneDelegate);
+            if (pointsValue.IsHolding<VtVec3fArray>()) {
+                _points = pointsValue.UncheckedGet<VtVec3fArray>();
                 changed = true;
             }
         }
@@ -47,6 +53,11 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             SetMaterialId(sceneDelegate->GetMaterialId(id));
             changed = true;
         }
+        points = _points;
+        topology = _topology;
+        transform = _transform;
+        visible = _visible;
+        materialId = GetMaterialId();
     }
 
     _UpdateVisibility(sceneDelegate, dirtyBits);
@@ -54,7 +65,37 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     *dirtyBits = HdChangeTracker::Clean;
     if (changed) {
         if (auto* param = dynamic_cast<HdCodexRenderParam*>(renderParam)) {
-            param->MarkSceneDirty();
+            auto* scene = param->GetScene();
+            if (!visible || points.empty()) {
+                scene->RemoveMesh(id.GetString());
+                return;
+            }
+
+            VtVec3iArray triangles;
+            VtIntArray primitiveParams;
+            HdMeshUtil(&topology, id).ComputeTriangleIndices(
+                &triangles, &primitiveParams);
+
+            hdcodex::SceneMesh mesh;
+            mesh.id = id.GetString();
+            mesh.materialId = materialId.GetString();
+            mesh.positions.reserve(points.size() * 3U);
+            for (const GfVec3f& point : points) {
+                const GfVec3d world = transform.Transform(GfVec3d(point));
+                mesh.positions.push_back(static_cast<float>(world[0]));
+                mesh.positions.push_back(static_cast<float>(world[1]));
+                mesh.positions.push_back(static_cast<float>(world[2]));
+            }
+            mesh.indices.reserve(triangles.size() * 3U);
+            for (const GfVec3i& triangle : triangles) {
+                for (int component = 0; component < 3; ++component) {
+                    if (triangle[component] >= 0) {
+                        mesh.indices.push_back(
+                            static_cast<std::uint32_t>(triangle[component]));
+                    }
+                }
+            }
+            scene->UpsertMesh(std::move(mesh));
         }
     }
 }

@@ -65,6 +65,23 @@ void TestVersionedScene()
     Require(scene.PublishedRevision() == 0, "dirty staging leaked into published state");
     Require(scene.Publish() == 1, "published revision is incorrect");
     Require(scene.PublishedRevision() == 1, "published revision did not persist");
+
+    hdcodex::SceneMesh mesh;
+    mesh.id = "/triangle";
+    mesh.positions = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    mesh.indices = {0, 1, 2};
+    scene.UpsertMesh(mesh);
+    const auto meshRevision = scene.Publish();
+    const auto snapshot = scene.Snapshot();
+    Require(snapshot && snapshot->revision == meshRevision,
+            "scene snapshot revision mismatch");
+    Require(snapshot->meshes.size() == 1, "scene snapshot lost mesh");
+    Require(snapshot->meshes.front().indices.size() == 3,
+            "scene snapshot lost indices");
+
+    scene.RemoveMesh("/triangle");
+    (void)scene.Publish();
+    Require(scene.Snapshot()->meshes.empty(), "scene mesh removal was not published");
 }
 
 } // namespace
@@ -82,4 +99,3 @@ int main()
         return 1;
     }
 }
-
