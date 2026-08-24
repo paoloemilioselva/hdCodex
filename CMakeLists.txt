@@ -13,8 +13,14 @@ option(HDCODEX_ENABLE_MATERIALX "Build runtime MaterialX shader generation" ON)
 option(HDCODEX_FETCH_DEPENDENCIES "Fetch source-buildable dependencies into the build tree" OFF)
 option(HDCODEX_WARNINGS_AS_ERRORS "Treat hdCodex compiler warnings as errors" OFF)
 
-set(HDCODEX_OPENUSD_ROOT "" CACHE PATH "OpenUSD install root (or a Houdini install root)")
+set(HDCODEX_OPENUSD_ROOT "C:/dev/usd-26.03" CACHE PATH "OpenUSD install root")
 set(HDCODEX_SHADER_CACHE_DIR "shader-cache" CACHE STRING "Default runtime shader cache directory")
+
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX
+      "C:/Users/paolo/Desktop/usd-26.03-extra"
+      CACHE PATH "hdCodex installation prefix" FORCE)
+endif()
 
 add_library(hdCodexProjectOptions INTERFACE)
 target_compile_features(hdCodexProjectOptions INTERFACE cxx_std_20)
@@ -39,4 +45,3 @@ endif()
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
-

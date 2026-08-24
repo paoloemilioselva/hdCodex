@@ -1,0 +1,21 @@
+{
+  "Plugins": [
+    {
+      "Info": {
+        "Types": {
+          "HdCodexRendererPlugin": {
+            "bases": ["HdRendererPlugin"],
+            "displayName": "Codex GPU Path Tracer",
+            "priority": 100
+          }
+        }
+      },
+      "LibraryPath": "../hdCodex.dll",
+      "Name": "hdCodex",
+      "ResourcePath": "resources",
+      "Root": "..",
+      "Type": "library"
+    }
+  ]
+}
+
