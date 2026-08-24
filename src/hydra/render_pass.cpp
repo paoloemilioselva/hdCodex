@@ -3,15 +3,47 @@
 #include "render_buffer.h"
 
 #include "pxr/imaging/hd/renderPassState.h"
+#include "pxr/imaging/hd/tokens.h"
+#include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/gf/vec3d.h"
+#include "pxr/base/tf/diagnostic.h"
 
+#include <algorithm>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
+namespace {
+
+hdcodex::PathTracerCamera MakeCamera(const HdRenderPassStateSharedPtr& state)
+{
+    const GfMatrix4d view = state->GetWorldToViewMatrix();
+    const GfMatrix4d inverseViewProjection =
+        (view * state->GetProjectionMatrix()).GetInverse();
+    const GfVec3d origin = view.GetInverse().Transform(GfVec3d(0.0));
+    const GfVec3d lowerLeft = inverseViewProjection.Transform(GfVec3d(-1.0, -1.0, -1.0));
+    const GfVec3d lowerRight = inverseViewProjection.Transform(GfVec3d(1.0, -1.0, -1.0));
+    const GfVec3d upperLeft = inverseViewProjection.Transform(GfVec3d(-1.0, 1.0, -1.0));
+    const GfVec3d horizontal = lowerRight - lowerLeft;
+    const GfVec3d vertical = upperLeft - lowerLeft;
+    return {
+        .origin = {static_cast<float>(origin[0]), static_cast<float>(origin[1]),
+                   static_cast<float>(origin[2])},
+        .lowerLeft = {static_cast<float>(lowerLeft[0]), static_cast<float>(lowerLeft[1]),
+                      static_cast<float>(lowerLeft[2])},
+        .horizontal = {static_cast<float>(horizontal[0]), static_cast<float>(horizontal[1]),
+                       static_cast<float>(horizontal[2])},
+        .vertical = {static_cast<float>(vertical[0]), static_cast<float>(vertical[1]),
+                     static_cast<float>(vertical[2])},
+    };
+}
+
+} // namespace
 
 HdCodexRenderPass::HdCodexRenderPass(HdRenderIndex* index,
                                      const HdRprimCollection& collection,
-                                     hdcodex::VersionedScene* scene)
-    : HdRenderPass(index, collection), _scene(scene)
+                                     hdcodex::VersionedScene* scene,
+                                     hdcodex::VulkanPathTracer* pathTracer)
+    : HdRenderPass(index, collection), _scene(scene), _pathTracer(pathTracer)
 {
 }
 
@@ -19,26 +51,80 @@ HdCodexRenderPass::~HdCodexRenderPass() = default;
 
 bool HdCodexRenderPass::IsConverged() const
 {
-    return _lastRevision == _scene->PublishedRevision();
+    return _converged && _lastRevision == _scene->PublishedRevision();
 }
 
 void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                                  const TfTokenVector& /*renderTags*/)
 {
+    constexpr unsigned int targetSamples = 64;
     const auto revision = _scene->PublishedRevision();
+    const hdcodex::PathTracerCamera camera = MakeCamera(renderPassState);
+    HdCodexRenderBuffer* colorBuffer = nullptr;
+    const HdRenderPassAovBinding* colorBinding = nullptr;
     for (const HdRenderPassAovBinding& binding : renderPassState->GetAovBindings()) {
         auto* buffer = dynamic_cast<HdCodexRenderBuffer*>(binding.renderBuffer);
-        if (!buffer) {
-            continue;
-        }
+        if (!buffer) continue;
         buffer->SetConverged(false);
-        if (_lastRevision != revision) {
+        if (binding.aovName == HdAovTokens->color) {
+            colorBuffer = buffer;
+            colorBinding = &binding;
+        } else if (_lastRevision != revision) {
             buffer->Clear(binding.clearValue);
         }
-        buffer->SetConverged(true);
     }
+
+    if (!colorBuffer || !_pathTracer) {
+        for (const HdRenderPassAovBinding& binding : renderPassState->GetAovBindings()) {
+            if (auto* buffer = dynamic_cast<HdCodexRenderBuffer*>(binding.renderBuffer)) {
+                buffer->SetConverged(true);
+            }
+        }
+        _converged = true;
+        _lastRevision = revision;
+        return;
+    }
+
+    const unsigned int width = colorBuffer->GetWidth();
+    const unsigned int height = colorBuffer->GetHeight();
+    const bool reset = _lastRevision != revision || !_hasCamera ||
+        !(camera == _lastCamera) || width != _lastWidth || height != _lastHeight;
+    if (reset) {
+        try {
+            if (_lastRevision != revision) _pathTracer->SetScene(_scene->Snapshot());
+            _sampleIndex = 0;
+        } catch (const std::exception& error) {
+            TF_WARN("hdCodex failed to build the Vulkan path-tracing scene: %s", error.what());
+            colorBuffer->Clear(colorBinding->clearValue);
+        }
+    }
+
+    if (_pathTracer->HasGeometry() && width > 0 && height > 0 && _sampleIndex < targetSamples) {
+        try {
+            colorBuffer->WriteFloat4(
+                _pathTracer->Render(camera, width, height, _sampleIndex));
+            ++_sampleIndex;
+        } catch (const std::exception& error) {
+            TF_WARN("hdCodex Vulkan path trace failed: %s", error.what());
+            colorBuffer->Clear(colorBinding->clearValue);
+            _sampleIndex = targetSamples;
+        }
+    } else if (!_pathTracer->HasGeometry()) {
+        colorBuffer->Clear(colorBinding->clearValue);
+        _sampleIndex = targetSamples;
+    }
+
+    _converged = _sampleIndex >= targetSamples;
+    for (const HdRenderPassAovBinding& binding : renderPassState->GetAovBindings()) {
+        if (auto* buffer = dynamic_cast<HdCodexRenderBuffer*>(binding.renderBuffer)) {
+            buffer->SetConverged(_converged);
+        }
+    }
+    _lastCamera = camera;
+    _lastWidth = width;
+    _lastHeight = height;
+    _hasCamera = true;
     _lastRevision = revision;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE
-

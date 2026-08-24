@@ -1,4 +1,5 @@
 add_library(hdCodexGpu STATIC
+  vulkan_path_tracer.cpp
   vulkan_context.cpp
 )
 add_library(hdCodex::Gpu ALIAS hdCodexGpu)

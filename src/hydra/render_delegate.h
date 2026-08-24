@@ -6,6 +6,7 @@
 #include "hdcodex/core/shader_cache.h"
 #if defined(HDCODEX_HAS_VULKAN)
 #include "hdcodex/gpu/vulkan_context.h"
+#include "hdcodex/gpu/vulkan_path_tracer.h"
 #endif
 #include "pxr/imaging/hd/renderDelegate.h"
 
@@ -58,6 +59,7 @@ private:
     HdResourceRegistrySharedPtr _resourceRegistry;
 #if defined(HDCODEX_HAS_VULKAN)
     std::unique_ptr<hdcodex::VulkanContext> _vulkan;
+    std::unique_ptr<hdcodex::VulkanPathTracer> _pathTracer;
 #endif
 };
 

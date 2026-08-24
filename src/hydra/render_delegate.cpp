@@ -46,6 +46,10 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 #if defined(HDCODEX_HAS_MATERIALX)
     _materialCompiler = std::make_unique<hdcodex::MaterialXCompiler>(*_shaderCache);
 #endif
+    
+#if defined(HDCODEX_HAS_VULKAN)
+    _pathTracer = std::make_unique<hdcodex::VulkanPathTracer>(*_vulkan, *_shaderCache);
+#endif
     _renderParam = std::make_unique<HdCodexRenderParam>(&_scene, _materialCompiler.get());
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
     for (const auto& [key, value] : settingsMap) {
@@ -65,7 +69,14 @@ HdResourceRegistrySharedPtr HdCodexRenderDelegate::GetResourceRegistry() const {
 HdRenderPassSharedPtr HdCodexRenderDelegate::CreateRenderPass(
     HdRenderIndex* index, const HdRprimCollection& collection)
 {
-    return std::make_shared<HdCodexRenderPass>(index, collection, &_scene);
+    return std::make_shared<HdCodexRenderPass>(
+        index, collection, &_scene,
+#if defined(HDCODEX_HAS_VULKAN)
+        _pathTracer.get()
+#else
+        nullptr
+#endif
+    );
 }
 
 HdInstancer* HdCodexRenderDelegate::CreateInstancer(

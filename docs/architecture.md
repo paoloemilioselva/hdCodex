@@ -42,7 +42,7 @@ or render settings version changes.
 
 ## GPU backend
 
-The primary backend is Vulkan 1.2 plus:
+The primary backend is Vulkan 1.3 plus:
 
 - `VK_KHR_acceleration_structure`
 - `VK_KHR_ray_query`
@@ -55,6 +55,13 @@ This keeps the renderer's integrator and material dispatch explicit while using
 vendor RT hardware. A BLAS is cached per topology; the TLAS is rebuilt or updated
 for transform/visibility changes. Accumulation resets only for changes that can
 affect the image.
+
+The initial integrator traces up to five diffuse bounces, samples an analytic
+sky, performs explicit sun shadow queries, accumulates one stochastic sample
+per Hydra execute, and converges at 64 samples. Scene or camera changes reset
+accumulation. Geometry is flattened into one world-space BLAS for this first
+functional path; per-mesh BLAS caching and TLAS instance updates remain a
+performance optimization.
 
 ## MaterialX compilation
 

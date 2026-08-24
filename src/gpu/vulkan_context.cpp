@@ -91,7 +91,7 @@ void Check(VkResult result, const char* operation)
         .applicationVersion = VK_MAKE_API_VERSION(0, 0, 1, 0),
         .pEngineName = "hdCodex",
         .engineVersion = VK_MAKE_API_VERSION(0, 0, 1, 0),
-        .apiVersion = VK_API_VERSION_1_2,
+        .apiVersion = VK_API_VERSION_1_3,
     };
     const VkInstanceCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -245,4 +245,3 @@ void* VulkanContext::DeviceHandle() const noexcept { return _impl->device; }
 void* VulkanContext::ComputeQueueHandle() const noexcept { return _impl->queue; }
 
 } // namespace hdcodex
-

@@ -5,7 +5,7 @@
 - CMake 3.25 or newer
 - A C++20 compiler
 - OpenUSD with imaging/Hydra enabled
-- A Vulkan 1.2 driver with ray-query support for GPU rendering
+- A Vulkan 1.3 driver with ray-query support for GPU rendering
 - MaterialX and glslang for runtime material compilation
 
 CUDA is not required. Vulkan ray queries use RT hardware where the driver exposes

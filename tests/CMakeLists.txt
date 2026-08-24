@@ -12,6 +12,10 @@ if(HDCODEX_ENABLE_VULKAN)
     add_executable(hdCodexGlslCompilerTests glsl_compiler_tests.cpp)
     target_link_libraries(hdCodexGlslCompilerTests PRIVATE hdCodex::Gpu)
     add_test(NAME hdCodex.GlslCompiler COMMAND hdCodexGlslCompilerTests)
+
+    add_executable(hdCodexPathTracerTests path_tracer_tests.cpp)
+    target_link_libraries(hdCodexPathTracerTests PRIVATE hdCodex::Gpu)
+    add_test(NAME hdCodex.PathTracer COMMAND hdCodexPathTracerTests)
   endif()
 endif()
 

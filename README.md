@@ -14,10 +14,13 @@ outside the OpenUSD source tree.
 ## Status
 
 This repository is under active development. The current milestone provides a
-loadable Hydra plugin, scene/AOV adapters, a hardware ray-query Vulkan device,
-an in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
-generation. BLAS/TLAS construction and the progressive path integration pass
-are the next renderer milestone; the current render pass only clears AOVs.
+loadable Hydra plugin, triangulated scene snapshots, Vulkan BLAS/TLAS builds, a
+five-bounce progressive ray-query path integrator, Hydra color-AOV output, an
+in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
+generation. MaterialX modules are compiled and retained by Hydra materials;
+binding their full texture/closure interface into the path integrator is the
+next material milestone. The current integrator shades a procedural diffuse
+material while that binding layer is completed.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
 phases, and [Building](docs/building.md) for local dependency setup.
