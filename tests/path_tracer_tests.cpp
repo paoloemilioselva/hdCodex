@@ -29,13 +29,23 @@ try {
         .id = "/triangle",
         .positions = {-1.25F, -1.0F, -3.0F, 1.25F, -1.0F, -3.0F, 0.0F, 1.2F, -3.0F},
         .indices = {0, 1, 2},
+        .texcoords = {0.0F, 0.0F, 1.0F, 0.0F, 0.5F, 1.0F},
         .materialId = "/red",
     });
     scene->materials.push_back({
         .id = "/red",
-        .baseColor = {0.8F, 0.05F, 0.03F},
+        .baseColor = {1.0F, 1.0F, 1.0F},
         .metalness = 0.15F,
         .roughness = 0.3F,
+        .baseColorTexture = "green#srgb",
+    });
+    scene->textures.push_back({
+        .id = "green#srgb",
+        .sourcePath = "synthetic",
+        .width = 1,
+        .height = 1,
+        .srgb = true,
+        .rgba = {16, 220, 32, 255},
     });
     tracer.SetScene(scene);
     Check(tracer.HasGeometry(), "path tracer did not build geometry");
@@ -58,6 +68,8 @@ try {
     const float cornerLuma = pixels[corner] + pixels[corner + 1] + pixels[corner + 2];
     Check(std::abs(centerLuma - cornerLuma) > 0.02F,
           "ray-query image does not distinguish triangle from background");
+    Check(pixels[center + 1] > pixels[center] * 1.5F,
+          "path tracer did not sample the bound base-color texture");
     Check(pixels[center + 3] == 1.0F, "path tracer alpha is not one");
 
     const auto progressive = tracer.Render(camera, width, height, 1);
