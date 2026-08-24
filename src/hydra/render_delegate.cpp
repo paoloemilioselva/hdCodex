@@ -1,6 +1,7 @@
 #include "render_delegate.h"
 
 #include "camera.h"
+#include "instancer.h"
 #include "material.h"
 #include "mesh.h"
 #include "render_buffer.h"
@@ -82,7 +83,7 @@ HdRenderPassSharedPtr HdCodexRenderDelegate::CreateRenderPass(
 HdInstancer* HdCodexRenderDelegate::CreateInstancer(
     HdSceneDelegate* delegate, const SdfPath& id)
 {
-    return new HdInstancer(delegate, id);
+    return new HdCodexInstancer(delegate, id);
 }
 
 void HdCodexRenderDelegate::DestroyInstancer(HdInstancer* instancer) { delete instancer; }

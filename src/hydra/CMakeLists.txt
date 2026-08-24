@@ -1,5 +1,6 @@
 add_library(hdCodex SHARED
   camera.cpp
+  instancer.cpp
   material.cpp
   mesh.cpp
   render_buffer.cpp

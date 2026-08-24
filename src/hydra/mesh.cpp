@@ -1,9 +1,11 @@
 #include "mesh.h"
 
+#include "instancer.h"
 #include "render_param.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/meshUtil.h"
+#include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/base/gf/vec2d.h"
 #include "pxr/base/gf/vec2f.h"
@@ -162,6 +164,9 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                        const TfToken& /*reprToken*/)
 {
     const SdfPath& id = GetId();
+    _UpdateInstancer(sceneDelegate, dirtyBits);
+    HdInstancer::_SyncInstancerAndParents(
+        sceneDelegate->GetRenderIndex(), GetInstancerId());
     bool changed = false;
     VtVec3fArray points;
     HdMeshTopology topology;
@@ -171,6 +176,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     HdInterpolation texcoordInterpolation = HdInterpolationConstant;
     bool visible = true;
     SdfPath materialId;
+    SdfPath instancerId;
     {
         const std::scoped_lock lock(_mutex);
         if (HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->points)) {
@@ -208,6 +214,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             SetMaterialId(sceneDelegate->GetMaterialId(id));
             changed = true;
         }
+        if (HdChangeTracker::IsInstancerDirty(*dirtyBits, id)) changed = true;
         points = _points;
         topology = _topology;
         texcoords = _texcoords;
@@ -216,6 +223,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
         transform = _transform;
         visible = _visible;
         materialId = GetMaterialId();
+        instancerId = GetInstancerId();
     }
 
     _UpdateVisibility(sceneDelegate, dirtyBits);
@@ -234,29 +242,59 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             HdMeshUtil(&topology, id).ComputeTriangleIndices(
                 &triangles, &primitiveParams);
 
+            VtMatrix4dArray instanceTransforms;
+            if (instancerId.IsEmpty()) {
+                instanceTransforms.push_back(GfMatrix4d(1.0));
+            } else {
+                HdInstancer* instancer =
+                    sceneDelegate->GetRenderIndex().GetInstancer(instancerId);
+                if (auto* codexInstancer = dynamic_cast<HdCodexInstancer*>(instancer)) {
+                    instanceTransforms =
+                        codexInstancer->ComputeInstanceTransforms(id);
+                }
+            }
+            if (instanceTransforms.empty()) {
+                scene->RemoveMesh(id.GetString());
+                return;
+            }
+
+            const std::vector<float> cornerTexcoords = texcoords.empty()
+                ? std::vector<float>{}
+                : TriangulateTextureCoordinates(
+                    topology, id, triangles, primitiveParams, texcoords,
+                    texcoordIndices, texcoordInterpolation);
+
             hdcodex::SceneMesh mesh;
             mesh.id = id.GetString();
             mesh.materialId = materialId.GetString();
-            mesh.positions.reserve(points.size() * 3U);
-            for (const GfVec3f& point : points) {
-                const GfVec3d world = transform.Transform(GfVec3d(point));
-                mesh.positions.push_back(static_cast<float>(world[0]));
-                mesh.positions.push_back(static_cast<float>(world[1]));
-                mesh.positions.push_back(static_cast<float>(world[2]));
-            }
-            mesh.indices.reserve(triangles.size() * 3U);
-            for (const GfVec3i& triangle : triangles) {
-                for (int component = 0; component < 3; ++component) {
-                    if (triangle[component] >= 0) {
-                        mesh.indices.push_back(
-                            static_cast<std::uint32_t>(triangle[component]));
+            mesh.positions.reserve(points.size() * 3U * instanceTransforms.size());
+            mesh.indices.reserve(triangles.size() * 3U * instanceTransforms.size());
+            mesh.texcoords.reserve(cornerTexcoords.size() * instanceTransforms.size());
+            for (const GfMatrix4d& instanceTransform : instanceTransforms) {
+                const std::uint32_t vertexBase = static_cast<std::uint32_t>(
+                    mesh.positions.size() / 3U);
+                const GfMatrix4d worldTransform = transform * instanceTransform;
+                for (const GfVec3f& point : points) {
+                    const GfVec3d world = worldTransform.Transform(GfVec3d(point));
+                    mesh.positions.push_back(static_cast<float>(world[0]));
+                    mesh.positions.push_back(static_cast<float>(world[1]));
+                    mesh.positions.push_back(static_cast<float>(world[2]));
+                }
+                for (const GfVec3i& triangle : triangles) {
+                    bool valid = true;
+                    for (int component = 0; component < 3; ++component) {
+                        valid = valid && triangle[component] >= 0 &&
+                            static_cast<std::size_t>(triangle[component]) < points.size();
+                    }
+                    if (valid) {
+                        for (int component = 0; component < 3; ++component) {
+                            mesh.indices.push_back(vertexBase +
+                                static_cast<std::uint32_t>(triangle[component]));
+                        }
                     }
                 }
-            }
-            if (!texcoords.empty()) {
-                mesh.texcoords = TriangulateTextureCoordinates(
-                    topology, id, triangles, primitiveParams, texcoords,
-                    texcoordIndices, texcoordInterpolation);
+                mesh.texcoords.insert(mesh.texcoords.end(),
+                    cornerTexcoords.begin(), cornerTexcoords.end());
             }
             scene->UpsertMesh(std::move(mesh));
         }
