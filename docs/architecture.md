@@ -85,8 +85,11 @@ prefix in expressions. The compatibility adapter removes only this stale
 prefix before glslang validation. It can be deleted when the standalone OpenUSD
 distribution moves to a MaterialX version with the corrected generator.
 
-The first supported closure is `standard_surface`, including base color,
-metalness, specular roughness, emission, opacity, and transmission. Unsupported
+The first GPU BSDF binding supports constant `standard_surface` and Preview
+Surface base color, metalness, specular roughness, and emission values. Hydra
+materials retain the complete generated MaterialX stage modules. UV primvars,
+image descriptors, opacity/transmission, and callable integration of the
+remaining generated closure interface are still in progress. Unsupported
 closures produce a visible diagnostic material and a Hydra warning rather than
 silently changing appearance.
 

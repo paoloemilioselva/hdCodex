@@ -26,6 +26,9 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(std430, set = 0, binding = 1) buffer OutputPixels { vec4 pixels[]; };
 layout(std430, set = 0, binding = 2) readonly buffer Vertices { vec4 positions[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(std430, set = 0, binding = 5) readonly buffer TriangleMaterials { uint triangleMaterials[]; };
+struct GpuMaterial { vec4 baseColorMetalness; vec4 emissionRoughness; };
+layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial materials[]; };
 layout(std140, set = 0, binding = 4) uniform CameraBlock
 {
     vec4 origin;
@@ -122,20 +125,27 @@ void main()
 
         float distance = rayQueryGetIntersectionTEXT(query, true);
         vec3 hit = rayOrigin + rayDirection * distance;
-        vec3 baseColor = 0.35 + 0.55 * vec3(
-            float(hashState(primitive + 11u) & 255u),
-            float(hashState(primitive + 37u) & 255u),
-            float(hashState(primitive + 71u) & 255u)) / 255.0;
+        GpuMaterial material = materials[triangleMaterials[primitive]];
+        vec3 baseColor = material.baseColorMetalness.rgb;
+        float metalness = clamp(material.baseColorMetalness.a, 0.0, 1.0);
+        float roughness = clamp(material.emissionRoughness.a, 0.02, 1.0);
+        radiance += throughput * material.emissionRoughness.rgb;
 
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
         float nDotL = max(dot(normal, sunDirection), 0.0);
         if (nDotL > 0.0 && !occluded(hit + normal * 0.002, sunDirection)) {
-            radiance += throughput * baseColor * vec3(3.5, 3.2, 2.8) * nDotL;
+            radiance += throughput * baseColor * vec3(1.1, 1.0, 0.9) * nDotL;
         }
 
         throughput *= baseColor;
         rayOrigin = hit + normal * 0.002;
-        rayDirection = cosineHemisphere(normal, rng);
+        if (randomFloat(rng) < metalness) {
+            vec3 reflected = reflect(rayDirection, normal);
+            rayDirection = normalize(mix(reflected, cosineHemisphere(normal, rng),
+                                         roughness * roughness));
+        } else {
+            rayDirection = cosineHemisphere(normal, rng);
+        }
         if (bounce >= 2) {
             float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
             if (randomFloat(rng) > survival) break;
@@ -161,6 +171,11 @@ void Check(VkResult result, const char* operation)
 }
 
 struct GpuVertex { float x, y, z, w; };
+
+struct GpuMaterial {
+    std::array<float, 4> baseColorMetalness;
+    std::array<float, 4> emissionRoughness;
+};
 
 struct CameraUniform {
     std::array<float, 4> origin;
@@ -318,6 +333,10 @@ public:
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         };
         const VkDescriptorSetLayoutCreateInfo layoutInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -328,7 +347,7 @@ public:
               "vkCreateDescriptorSetLayout");
         const std::array poolSizes = {
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         };
         const VkDescriptorPoolCreateInfo poolInfo{
@@ -406,6 +425,8 @@ public:
         DestroyBuffer(instanceBuffer);
         DestroyBuffer(vertexBuffer);
         DestroyBuffer(indexBuffer);
+        DestroyBuffer(triangleMaterialBuffer);
+        DestroyBuffer(materialBuffer);
         geometryReady = false;
     }
 
@@ -436,17 +457,40 @@ public:
 
         std::vector<GpuVertex> vertices;
         std::vector<std::uint32_t> indices;
+        std::vector<std::uint32_t> triangleMaterials;
+        std::vector<GpuMaterial> materials;
+        materials.push_back({{0.8F, 0.8F, 0.8F, 0.0F}, {0.0F, 0.0F, 0.0F, 0.5F}});
+        std::map<std::string, std::uint32_t, std::less<>> materialIndices;
+        for (const SceneMaterial& material : snapshot->materials) {
+            const std::uint32_t index = static_cast<std::uint32_t>(materials.size());
+            materialIndices[material.id] = index;
+            materials.push_back({
+                {material.baseColor[0], material.baseColor[1], material.baseColor[2],
+                 material.metalness},
+                {material.emission[0], material.emission[1], material.emission[2],
+                 material.roughness},
+            });
+        }
         for (const SceneMesh& mesh : snapshot->meshes) {
             const std::uint32_t base = static_cast<std::uint32_t>(vertices.size());
             for (std::size_t i = 0; i + 2 < mesh.positions.size(); i += 3) {
                 vertices.push_back({mesh.positions[i], mesh.positions[i + 1],
                                     mesh.positions[i + 2], 1.0F});
             }
-            for (std::uint32_t index : mesh.indices) {
-                if (index < vertices.size() - base) indices.push_back(base + index);
+            const auto foundMaterial = materialIndices.find(mesh.materialId);
+            const std::uint32_t materialIndex = foundMaterial == materialIndices.end()
+                ? 0U : foundMaterial->second;
+            for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
+                const std::uint32_t i0 = mesh.indices[triangle];
+                const std::uint32_t i1 = mesh.indices[triangle + 1];
+                const std::uint32_t i2 = mesh.indices[triangle + 2];
+                if (i0 < vertices.size() - base && i1 < vertices.size() - base &&
+                    i2 < vertices.size() - base) {
+                    indices.insert(indices.end(), {base + i0, base + i1, base + i2});
+                    triangleMaterials.push_back(materialIndex);
+                }
             }
         }
-        indices.resize(indices.size() - (indices.size() % 3U));
         if (vertices.empty() || indices.empty()) return;
 
         const VkBufferUsageFlags inputUsage =
@@ -459,6 +503,16 @@ public:
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
         std::memcpy(vertexBuffer.mapped, vertices.data(), static_cast<std::size_t>(vertexBuffer.size));
         std::memcpy(indexBuffer.mapped, indices.data(), static_cast<std::size_t>(indexBuffer.size));
+        triangleMaterialBuffer = CreateBuffer(
+            triangleMaterials.size() * sizeof(std::uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
+        materialBuffer = CreateBuffer(materials.size() * sizeof(GpuMaterial),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
+        std::memcpy(triangleMaterialBuffer.mapped, triangleMaterials.data(),
+                    static_cast<std::size_t>(triangleMaterialBuffer.size));
+        std::memcpy(materialBuffer.mapped, materials.data(),
+                    static_cast<std::size_t>(materialBuffer.size));
 
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -580,16 +634,25 @@ public:
         const VkDescriptorBufferInfo vertexInfo{vertexBuffer.handle, 0, vertexBuffer.size};
         const VkDescriptorBufferInfo indexInfo{indexBuffer.handle, 0, indexBuffer.size};
         const VkDescriptorBufferInfo uniformInfo{uniform.handle, 0, uniform.size};
-        std::array<VkWriteDescriptorSet, 5> writes{};
+        const VkDescriptorBufferInfo triangleMaterialInfo{
+            triangleMaterialBuffer.handle, 0, triangleMaterialBuffer.size};
+        const VkDescriptorBufferInfo materialInfo{
+            materialBuffer.handle, 0, materialBuffer.size};
+        std::array<VkWriteDescriptorSet, 7> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &accelerationWrite,
             descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
-        const std::array infos = {&outputInfo, &vertexInfo, &indexInfo, &uniformInfo};
+        const std::array infos = {&outputInfo, &vertexInfo, &indexInfo};
         for (std::uint32_t index = 0; index < infos.size(); ++index) {
             writes[index + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                descriptorSet, index + 1, 0, 1,
-                index == 3 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                descriptorSet, index + 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 nullptr, infos[index], nullptr};
         }
+        writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uniformInfo, nullptr};
+        writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            5, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &triangleMaterialInfo, nullptr};
+        writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            6, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &materialInfo, nullptr};
         vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0, nullptr);
     }
@@ -640,6 +703,8 @@ public:
     Buffer vertexBuffer;
     Buffer indexBuffer;
     Buffer instanceBuffer;
+    Buffer triangleMaterialBuffer;
+    Buffer materialBuffer;
     Buffer blasStorage;
     Buffer tlasStorage;
     VkAccelerationStructureKHR blas{VK_NULL_HANDLE};

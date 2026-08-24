@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -17,9 +18,19 @@ struct SceneMesh {
     std::string materialId;
 };
 
+struct SceneMaterial {
+    std::string id;
+    std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
+    std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
+    float metalness{0.0F};
+    float roughness{0.5F};
+    float opacity{1.0F};
+};
+
 struct SceneSnapshot {
     std::uint64_t revision{0};
     std::vector<SceneMesh> meshes;
+    std::vector<SceneMaterial> materials;
 };
 
 /// Tracks staging and published scene revisions without exposing Hydra types to
@@ -54,6 +65,11 @@ public:
             (void)id;
             snapshot->meshes.push_back(mesh);
         }
+        snapshot->materials.reserve(_materials.size());
+        for (const auto& [id, material] : _materials) {
+            (void)id;
+            snapshot->materials.push_back(material);
+        }
         _snapshot = std::move(snapshot);
         _published.store(revision, std::memory_order_release);
         return revision;
@@ -73,6 +89,20 @@ public:
         if (_meshes.erase(id) != 0U) (void)MarkDirty();
     }
 
+    void UpsertMaterial(SceneMaterial material)
+    {
+        if (material.id.empty()) return;
+        const std::scoped_lock lock(_mutex);
+        _materials[material.id] = std::move(material);
+        (void)MarkDirty();
+    }
+
+    void RemoveMaterial(const std::string& id)
+    {
+        const std::scoped_lock lock(_mutex);
+        if (_materials.erase(id) != 0U) (void)MarkDirty();
+    }
+
     [[nodiscard]] std::shared_ptr<const SceneSnapshot> Snapshot() const
     {
         const std::scoped_lock lock(_mutex);
@@ -84,6 +114,7 @@ private:
     std::atomic<Revision> _published{0};
     mutable std::mutex _mutex;
     std::map<std::string, SceneMesh, std::less<>> _meshes;
+    std::map<std::string, SceneMaterial, std::less<>> _materials;
     std::shared_ptr<const SceneSnapshot> _snapshot =
         std::make_shared<const SceneSnapshot>();
 };

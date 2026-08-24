@@ -18,9 +18,10 @@ loadable Hydra plugin, triangulated scene snapshots, Vulkan BLAS/TLAS builds, a
 five-bounce progressive ray-query path integrator, Hydra color-AOV output, an
 in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
 generation. MaterialX modules are compiled and retained by Hydra materials;
-binding their full texture/closure interface into the path integrator is the
-next material milestone. The current integrator shades a procedural diffuse
-material while that binding layer is completed.
+constant `standard_surface`/Preview Surface base color, metalness, roughness,
+and emission values are bound into the GPU path integrator. UV primvars,
+texture images, opacity, and the remaining closure inputs are the next material
+milestone.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
 phases, and [Building](docs/building.md) for local dependency setup.

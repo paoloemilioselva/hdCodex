@@ -114,7 +114,13 @@ HdSprim* HdCodexRenderDelegate::CreateFallbackSprim(const TfToken& typeId)
     return CreateSprim(typeId, SdfPath::EmptyPath());
 }
 
-void HdCodexRenderDelegate::DestroySprim(HdSprim* sprim) { delete sprim; }
+void HdCodexRenderDelegate::DestroySprim(HdSprim* sprim)
+{
+    if (dynamic_cast<HdCodexMaterial*>(sprim)) {
+        _scene.RemoveMaterial(sprim->GetId().GetString());
+    }
+    delete sprim;
+}
 
 HdBprim* HdCodexRenderDelegate::CreateBprim(const TfToken& typeId, const SdfPath& bprimId)
 {

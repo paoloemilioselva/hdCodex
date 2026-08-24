@@ -79,9 +79,19 @@ void TestVersionedScene()
     Require(snapshot->meshes.front().indices.size() == 3,
             "scene snapshot lost indices");
 
+    hdcodex::SceneMaterial material;
+    material.id = "/red";
+    material.baseColor = {1.0F, 0.0F, 0.0F};
+    scene.UpsertMaterial(material);
+    (void)scene.Publish();
+    Require(scene.Snapshot()->materials.size() == 1,
+            "scene snapshot lost material");
+    scene.RemoveMaterial("/red");
+
     scene.RemoveMesh("/triangle");
     (void)scene.Publish();
     Require(scene.Snapshot()->meshes.empty(), "scene mesh removal was not published");
+    Require(scene.Snapshot()->materials.empty(), "scene material removal was not published");
 }
 
 } // namespace

@@ -29,6 +29,13 @@ try {
         .id = "/triangle",
         .positions = {-1.25F, -1.0F, -3.0F, 1.25F, -1.0F, -3.0F, 0.0F, 1.2F, -3.0F},
         .indices = {0, 1, 2},
+        .materialId = "/red",
+    });
+    scene->materials.push_back({
+        .id = "/red",
+        .baseColor = {0.8F, 0.05F, 0.03F},
+        .metalness = 0.15F,
+        .roughness = 0.3F,
     });
     tracer.SetScene(scene);
     Check(tracer.HasGeometry(), "path tracer did not build geometry");
