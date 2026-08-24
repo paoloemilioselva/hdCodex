@@ -15,6 +15,9 @@ struct SceneMesh {
     std::string id;
     std::vector<float> positions;
     std::vector<std::uint32_t> indices;
+    /// Two floats for every triangulated face corner. Keeping UVs in corner
+    /// order preserves Hydra face-varying seams without duplicating positions.
+    std::vector<float> texcoords;
     std::string materialId;
 };
 

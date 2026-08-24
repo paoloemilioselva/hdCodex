@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -94,6 +95,22 @@ void TestVersionedScene()
     Require(scene.Snapshot()->materials.empty(), "scene material removal was not published");
 }
 
+void TestSceneCarriesFaceCornerTextureCoordinates()
+{
+    hdcodex::VersionedScene scene;
+    hdcodex::SceneMesh mesh;
+    mesh.id = "/textured";
+    mesh.positions = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    mesh.indices = {0, 1, 2};
+    mesh.texcoords = {0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 1.0F};
+    scene.UpsertMesh(std::move(mesh));
+    (void)scene.Publish();
+    const auto snapshot = scene.Snapshot();
+    Require(snapshot->meshes.size() == 1, "textured mesh was not published");
+    Require(snapshot->meshes.front().texcoords.size() == 6,
+            "face-corner texture coordinates were not preserved");
+}
+
 } // namespace
 
 int main()
@@ -102,6 +119,7 @@ int main()
         TestSha256();
         TestCache();
         TestVersionedScene();
+        TestSceneCarriesFaceCornerTextureCoordinates();
         std::cout << "hdCodex core tests passed\n";
         return 0;
     } catch (const std::exception& error) {

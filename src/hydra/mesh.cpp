@@ -5,8 +5,148 @@
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/base/gf/vec2d.h"
+#include "pxr/base/gf/vec2f.h"
+
+#include <array>
+#include <optional>
+#include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+namespace {
+
+struct TextureCoordinates {
+    VtVec2fArray values;
+    VtIntArray indices;
+    HdInterpolation interpolation{HdInterpolationConstant};
+};
+
+VtVec2fArray ToVec2fArray(const VtValue& value)
+{
+    if (value.IsHolding<VtVec2fArray>()) {
+        return value.UncheckedGet<VtVec2fArray>();
+    }
+    VtVec2fArray result;
+    if (value.IsHolding<VtVec2dArray>()) {
+        const auto& source = value.UncheckedGet<VtVec2dArray>();
+        result.reserve(source.size());
+        for (const GfVec2d& item : source) {
+            result.push_back(GfVec2f(
+                static_cast<float>(item[0]), static_cast<float>(item[1])));
+        }
+    }
+    return result;
+}
+
+std::optional<TextureCoordinates> ReadTextureCoordinates(
+    HdSceneDelegate* sceneDelegate, const SdfPath& id)
+{
+    constexpr std::array interpolations = {
+        HdInterpolationFaceVarying,
+        HdInterpolationVertex,
+        HdInterpolationVarying,
+        HdInterpolationUniform,
+        HdInterpolationConstant,
+    };
+    static const TfToken stToken("st");
+    for (const HdInterpolation interpolation : interpolations) {
+        const HdPrimvarDescriptorVector descriptors =
+            sceneDelegate->GetPrimvarDescriptors(id, interpolation);
+        const HdPrimvarDescriptor* selected = nullptr;
+        for (const HdPrimvarDescriptor& descriptor : descriptors) {
+            if (descriptor.name == stToken) {
+                selected = &descriptor;
+                break;
+            }
+            if (!selected && descriptor.role == HdPrimvarRoleTokens->textureCoordinate) {
+                selected = &descriptor;
+            }
+        }
+        if (!selected) continue;
+
+        VtIntArray indices;
+        const VtValue value = selected->indexed
+            ? sceneDelegate->GetIndexedPrimvar(id, selected->name, &indices)
+            : sceneDelegate->Get(id, selected->name);
+        VtVec2fArray coordinates = ToVec2fArray(value);
+        if (!coordinates.empty()) {
+            return TextureCoordinates{
+                std::move(coordinates), std::move(indices), interpolation};
+        }
+    }
+    return std::nullopt;
+}
+
+VtVec2fArray FlattenIndexedCoordinates(
+    const VtVec2fArray& values, const VtIntArray& indices)
+{
+    if (indices.empty()) return values;
+    VtVec2fArray result;
+    result.reserve(indices.size());
+    for (const int index : indices) {
+        result.push_back(index >= 0 && static_cast<std::size_t>(index) < values.size()
+            ? values[static_cast<std::size_t>(index)] : GfVec2f(0.0F));
+    }
+    return result;
+}
+
+std::vector<float> TriangulateTextureCoordinates(
+    const HdMeshTopology& topology,
+    const SdfPath& id,
+    const VtVec3iArray& triangles,
+    const VtIntArray& primitiveParams,
+    const VtVec2fArray& values,
+    const VtIntArray& valueIndices,
+    HdInterpolation interpolation)
+{
+    const VtVec2fArray flattened = FlattenIndexedCoordinates(values, valueIndices);
+    VtVec2fArray corners;
+    if (interpolation == HdInterpolationFaceVarying) {
+        VtValue triangulated;
+        const HdMeshComputationResult result = HdMeshUtil(&topology, id)
+            .ComputeTriangulatedFaceVaryingPrimvar(
+                flattened.cdata(), static_cast<int>(flattened.size()),
+                HdTypeFloatVec2, &triangulated);
+        if (result == HdMeshComputationResult::Success &&
+            triangulated.IsHolding<VtVec2fArray>()) {
+            corners = triangulated.UncheckedGet<VtVec2fArray>();
+        } else if (result == HdMeshComputationResult::Unchanged) {
+            corners = flattened;
+        }
+    } else {
+        corners.reserve(triangles.size() * 3U);
+        for (std::size_t triangleIndex = 0; triangleIndex < triangles.size(); ++triangleIndex) {
+            const GfVec3i& triangle = triangles[triangleIndex];
+            for (int corner = 0; corner < 3; ++corner) {
+                std::size_t source = 0;
+                if (interpolation == HdInterpolationVertex ||
+                    interpolation == HdInterpolationVarying) {
+                    source = triangle[corner] >= 0
+                        ? static_cast<std::size_t>(triangle[corner]) : 0U;
+                } else if (interpolation == HdInterpolationUniform &&
+                           triangleIndex < primitiveParams.size()) {
+                    source = static_cast<std::size_t>(std::max(
+                        HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                            primitiveParams[triangleIndex]), 0));
+                }
+                corners.push_back(source < flattened.size()
+                    ? flattened[source] : GfVec2f(0.0F));
+            }
+        }
+    }
+
+    if (corners.size() != triangles.size() * 3U) return {};
+    std::vector<float> result;
+    result.reserve(corners.size() * 2U);
+    for (const GfVec2f& coordinate : corners) {
+        result.push_back(coordinate[0]);
+        result.push_back(coordinate[1]);
+    }
+    return result;
+}
+
+} // namespace
 
 HdCodexMesh::HdCodexMesh(const SdfPath& id) : HdMesh(id) {}
 HdCodexMesh::~HdCodexMesh() = default;
@@ -26,6 +166,9 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     VtVec3fArray points;
     HdMeshTopology topology;
     GfMatrix4d transform;
+    VtVec2fArray texcoords;
+    VtIntArray texcoordIndices;
+    HdInterpolation texcoordInterpolation = HdInterpolationConstant;
     bool visible = true;
     SdfPath materialId;
     {
@@ -39,6 +182,18 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
         }
         if (HdChangeTracker::IsTopologyDirty(*dirtyBits, id)) {
             _topology = GetMeshTopology(sceneDelegate);
+            changed = true;
+        }
+        if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
+            if (const auto coordinates = ReadTextureCoordinates(sceneDelegate, id)) {
+                _texcoords = coordinates->values;
+                _texcoordIndices = coordinates->indices;
+                _texcoordInterpolation = coordinates->interpolation;
+            } else {
+                _texcoords.clear();
+                _texcoordIndices.clear();
+                _texcoordInterpolation = HdInterpolationConstant;
+            }
             changed = true;
         }
         if (HdChangeTracker::IsTransformDirty(*dirtyBits, id)) {
@@ -55,6 +210,9 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
         }
         points = _points;
         topology = _topology;
+        texcoords = _texcoords;
+        texcoordIndices = _texcoordIndices;
+        texcoordInterpolation = _texcoordInterpolation;
         transform = _transform;
         visible = _visible;
         materialId = GetMaterialId();
@@ -94,6 +252,11 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                             static_cast<std::uint32_t>(triangle[component]));
                     }
                 }
+            }
+            if (!texcoords.empty()) {
+                mesh.texcoords = TriangulateTextureCoordinates(
+                    topology, id, triangles, primitiveParams, texcoords,
+                    texcoordIndices, texcoordInterpolation);
             }
             scene->UpsertMesh(std::move(mesh));
         }
