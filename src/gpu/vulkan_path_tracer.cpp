@@ -340,22 +340,32 @@ void main()
         radiance += throughput * emission;
 
         float transmission = clamp(material.transmissionOpacityIor.x, 0.0, 1.0);
-        vec3 transmissionColor = sampleMaterialTexture(
-            material.textureIndices1.z, surfaceUv,
-            vec4(material.transmissionColorThinWalled.rgb, 1.0)).rgb;
-        float subsurface = clamp(sampleMaterialTexture(
-            material.textureIndices2.x, surfaceUv,
-            vec4(material.subsurfaceWeightScale.x)).r, 0.0, 1.0);
-        vec3 subsurfaceColor = sampleMaterialTexture(
-            material.textureIndices2.y, surfaceUv,
-            vec4(material.subsurfaceColor.rgb, 1.0)).rgb;
-        vec3 subsurfaceRadius = max(sampleMaterialTexture(
-            material.textureIndices2.z, surfaceUv,
-            vec4(material.subsurfaceRadius.rgb, 1.0)).rgb, vec3(0.001));
-        vec3 subsurfaceAttenuation = exp(-max(material.subsurfaceWeightScale.y, 0.0) /
-                                         subsurfaceRadius);
-        vec3 diffuseColor = mix(baseColor,
-            subsurfaceColor * subsurfaceAttenuation, subsurface);
+        vec3 transmissionColor = material.transmissionColorThinWalled.rgb;
+        if (transmission > 0.0) {
+            transmissionColor = sampleMaterialTexture(
+                material.textureIndices1.z, surfaceUv,
+                vec4(transmissionColor, 1.0)).rgb;
+        }
+        float subsurface = 0.0;
+        vec3 diffuseColor = baseColor;
+        if (material.subsurfaceWeightScale.x > 0.0 ||
+            material.textureIndices2.x != 0xffffffffu) {
+            subsurface = clamp(sampleMaterialTexture(
+                material.textureIndices2.x, surfaceUv,
+                vec4(material.subsurfaceWeightScale.x)).r, 0.0, 1.0);
+            if (subsurface > 0.0) {
+                vec3 subsurfaceColor = sampleMaterialTexture(
+                    material.textureIndices2.y, surfaceUv,
+                    vec4(material.subsurfaceColor.rgb, 1.0)).rgb;
+                vec3 subsurfaceRadius = max(sampleMaterialTexture(
+                    material.textureIndices2.z, surfaceUv,
+                    vec4(material.subsurfaceRadius.rgb, 1.0)).rgb, vec3(0.001));
+                vec3 subsurfaceAttenuation = exp(
+                    -max(material.subsurfaceWeightScale.y, 0.0) / subsurfaceRadius);
+                diffuseColor = mix(baseColor,
+                    subsurfaceColor * subsurfaceAttenuation, subsurface);
+            }
+        }
         float ior = max(material.transmissionOpacityIor.z, 1.0001);
         float specularWeight = clamp(sampleMaterialTexture(
             material.textureIndices3.x, surfaceUv,
@@ -368,20 +378,28 @@ void main()
         vec3 f0 = mix(clamp(vec3(dielectricReflectance * specularWeight) *
                             specularColor, vec3(0.0), vec3(1.0)),
                       baseColor, metalness);
-        float coat = clamp(sampleMaterialTexture(
-            material.textureIndices3.z, surfaceUv,
-            vec4(material.coatWeightRoughnessIor.x)).r, 0.0, 1.0);
-        vec3 coatColor = sampleMaterialTexture(
-            material.textureIndices3.w, surfaceUv,
-            vec4(material.coatColor.rgb, 1.0)).rgb;
-        float coatRoughness = clamp(sampleMaterialTexture(
-            material.textureIndices4.x, surfaceUv,
-            vec4(material.coatWeightRoughnessIor.y)).r, 0.02, 1.0);
-        float coatIor = max(material.coatWeightRoughnessIor.z, 1.0001);
-        float coatReflectance = (coatIor - 1.0) / (coatIor + 1.0);
-        coatReflectance *= coatReflectance;
-        vec3 coatF0 = clamp(vec3(coatReflectance) * coatColor,
-                            vec3(0.0), vec3(1.0));
+        float coat = 0.0;
+        float coatRoughness = material.coatWeightRoughnessIor.y;
+        vec3 coatF0 = vec3(0.0);
+        if (material.coatWeightRoughnessIor.x > 0.0 ||
+            material.textureIndices3.z != 0xffffffffu) {
+            coat = clamp(sampleMaterialTexture(
+                material.textureIndices3.z, surfaceUv,
+                vec4(material.coatWeightRoughnessIor.x)).r, 0.0, 1.0);
+            if (coat > 0.0) {
+                vec3 coatColor = sampleMaterialTexture(
+                    material.textureIndices3.w, surfaceUv,
+                    vec4(material.coatColor.rgb, 1.0)).rgb;
+                coatRoughness = clamp(sampleMaterialTexture(
+                    material.textureIndices4.x, surfaceUv,
+                    vec4(coatRoughness)).r, 0.02, 1.0);
+                float coatIor = max(material.coatWeightRoughnessIor.z, 1.0001);
+                float coatReflectance = (coatIor - 1.0) / (coatIor + 1.0);
+                coatReflectance *= coatReflectance;
+                coatF0 = clamp(vec3(coatReflectance) * coatColor,
+                               vec3(0.0), vec3(1.0));
+            }
+        }
 
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
         vec3 viewDirection = normalize(-rayDirection);
@@ -398,10 +416,14 @@ void main()
                 (1.0 - transmission);
             vec3 specular = nDotL * evaluateGGX(
                 normal, viewDirection, sunDirection, roughness, f0);
-            vec3 coatFresnel = fresnelSchlick(
-                max(dot(viewDirection, halfway), 0.0), coatF0);
-            vec3 coatSpecular = coat * nDotL * evaluateGGX(
-                normal, viewDirection, sunDirection, coatRoughness, coatF0);
+            vec3 coatFresnel = vec3(0.0);
+            vec3 coatSpecular = vec3(0.0);
+            if (coat > 0.0) {
+                coatFresnel = fresnelSchlick(
+                    max(dot(viewDirection, halfway), 0.0), coatF0);
+                coatSpecular = coat * nDotL * evaluateGGX(
+                    normal, viewDirection, sunDirection, coatRoughness, coatF0);
+            }
             vec3 direct = (vec3(1.0) - coat * coatFresnel) *
                 (diffuse + specular) + coatSpecular;
             const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
@@ -428,8 +450,9 @@ void main()
         }
 
         rayOrigin = hit + orientedGeometricNormal * 0.002;
-        vec3 coatContribution = coat * fresnelSchlick(
-            max(dot(normal, viewDirection), 0.0), coatF0);
+        vec3 coatContribution = coat > 0.0
+            ? coat * fresnelSchlick(max(dot(normal, viewDirection), 0.0), coatF0)
+            : vec3(0.0);
         float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
         if (coatProbability > 0.0 && randomFloat(rng) < coatProbability) {
             vec3 incident = rayDirection;
