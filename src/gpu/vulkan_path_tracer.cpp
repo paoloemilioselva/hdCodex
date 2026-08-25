@@ -19,6 +19,7 @@ namespace {
 
 constexpr std::uint32_t kMaxMaterialTextures = 256U;
 constexpr std::uint32_t kMissingTexture = UINT32_MAX;
+constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
 
 constexpr auto kPathTracerSource = R"glsl(
 #version 460
@@ -235,8 +236,10 @@ vec3 surfaceShadingNormal(uint primitive, vec2 barycentrics, vec3 geometricNorma
 bool occluded(vec3 origin, vec3 direction)
 {
     rayQueryEXT shadow;
+    uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT;
+    if ((camera.frame.w & 0x100u) != 0u) rayFlags |= gl_RayFlagsOpaqueEXT;
     rayQueryInitializeEXT(shadow, scene,
-        gl_RayFlagsTerminateOnFirstHitEXT,
+        rayFlags,
         0xff, origin, 0.001, direction, 10000.0);
     while (rayQueryProceedEXT(shadow)) {
         if (rayQueryGetIntersectionTypeEXT(shadow, false) ==
@@ -271,7 +274,9 @@ void main()
     for (int bounce = 0; bounce < 5; ++bounce)
     {
         rayQueryEXT query;
-        rayQueryInitializeEXT(query, scene, gl_RayFlagsNoneEXT,
+        uint rayFlags = (camera.frame.w & 0x100u) != 0u
+            ? gl_RayFlagsOpaqueEXT : gl_RayFlagsNoneEXT;
+        rayQueryInitializeEXT(query, scene, rayFlags,
             0xff, rayOrigin, 0.001, rayDirection, 10000.0);
         while (rayQueryProceedEXT(query)) {
             if (rayQueryGetIntersectionTypeEXT(query, false) ==
@@ -945,6 +950,10 @@ public:
         vkDeviceWaitIdle(device);
         DestroyScene();
         if (!snapshot) return;
+        sceneOpaque = std::all_of(snapshot->materials.begin(), snapshot->materials.end(),
+            [](const SceneMaterial& material) {
+                return material.opacity >= 0.999F && material.opacityTexture.empty();
+            });
 
         std::vector<GpuVertex> vertices;
         std::vector<std::uint32_t> indices;
@@ -1094,7 +1103,7 @@ public:
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
         geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        geometry.flags = 0;
+        geometry.flags = sceneOpaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0U;
         geometry.geometry.triangles = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
             .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
@@ -1269,7 +1278,7 @@ public:
             {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2], 0.0F},
             {camera.horizontal[0], camera.horizontal[1], camera.horizontal[2], 0.0F},
             {camera.vertical[0], camera.vertical[1], camera.vertical[2], 0.0F},
-            {width, height, sample, 0U},
+            {width, height, sample, sceneOpaque ? kOpaqueSceneFlag : 0U},
         };
         std::memcpy(uniform.mapped, &data, sizeof(data));
         Submit([&](VkCommandBuffer command) {
@@ -1316,6 +1325,7 @@ public:
     VkAccelerationStructureKHR tlas{VK_NULL_HANDLE};
     std::vector<Texture> textures;
     bool geometryReady{false};
+    bool sceneOpaque{true};
 };
 
 VulkanPathTracer::VulkanPathTracer(VulkanContext& context, ShaderCache& cache)
