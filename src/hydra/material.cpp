@@ -194,6 +194,19 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             node, "transmission_weight", material.transmission);
         material.transmissionColor = ColorParameter(
             node, "transmission_color", material.transmissionColor);
+        material.transmissionDepth = FloatParameter(
+            node, "transmission_depth", material.transmissionDepth);
+        material.transmissionScatter = ColorParameter(
+            node, "transmission_scatter", material.transmissionScatter);
+        material.transmissionScatterAnisotropy = FloatParameter(
+            node, "transmission_scatter_anisotropy",
+            material.transmissionScatterAnisotropy);
+        material.transmissionDispersionScale = FloatParameter(
+            node, "transmission_dispersion_scale",
+            material.transmissionDispersionScale);
+        material.transmissionDispersionAbbeNumber = FloatParameter(
+            node, "transmission_dispersion_abbe_number",
+            material.transmissionDispersionAbbeNumber);
         material.indexOfRefraction = FloatParameter(
             node, "specular_ior", material.indexOfRefraction);
         material.specularWeight = FloatParameter(
@@ -218,10 +231,10 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
         for (float& component : material.subsurfaceRadius) {
             component *= subsurfaceRadius;
         }
-        // OpenPBR radius is a profile/mean-free-path control, not an
-        // absorption distance. The path tracer's current wrapped-diffuse
-        // approximation keeps the authored color without exponential loss.
-        material.subsurfaceScale = 0.0F;
+        material.subsurfaceScale = 1.0F;
+        material.subsurfaceScatterAnisotropy = FloatParameter(
+            node, "subsurface_scatter_anisotropy",
+            material.subsurfaceScatterAnisotropy);
         material.baseColorTexture = LoadTexture(
             scene, TextureForInput(network, node, "base_color"), true);
         material.metalnessTexture = LoadTexture(
@@ -265,6 +278,19 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
         material.transmission = FloatParameter(node, "transmission", material.transmission);
         material.transmissionColor = ColorParameter(
             node, "transmission_color", material.transmissionColor);
+        material.transmissionDepth = FloatParameter(
+            node, "transmission_depth", material.transmissionDepth);
+        material.transmissionScatter = ColorParameter(
+            node, "transmission_scatter", material.transmissionScatter);
+        material.transmissionScatterAnisotropy = FloatParameter(
+            node, "transmission_scatter_anisotropy",
+            material.transmissionScatterAnisotropy);
+        const float standardDispersion = FloatParameter(
+            node, "transmission_dispersion", 0.0F);
+        if (standardDispersion > 0.0F) {
+            material.transmissionDispersionScale = 1.0F;
+            material.transmissionDispersionAbbeNumber = standardDispersion;
+        }
         material.indexOfRefraction = FloatParameter(
             node, "specular_IOR", material.indexOfRefraction);
         material.specularWeight = FloatParameter(
@@ -285,6 +311,8 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             node, "subsurface_radius", material.subsurfaceRadius);
         material.subsurfaceScale = FloatParameter(
             node, "subsurface_scale", material.subsurfaceScale);
+        material.subsurfaceScatterAnisotropy = FloatParameter(
+            node, "subsurface_anisotropy", material.subsurfaceScatterAnisotropy);
         material.baseColorTexture = LoadTexture(
             scene, TextureForInput(network, node, "base_color"), true);
         material.metalnessTexture = LoadTexture(

@@ -15,7 +15,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera PhysCamera001 gallery\intel_sponza.usda gallery\intel_sponza.jpg
 ```
-**Render Time:** 31.79 seconds
+**Render Time:** 9.15 seconds
 
 ![Intel Sponza Base Scene](gallery/intel_sponza.jpg)
 
@@ -26,7 +26,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda gallery\chess_board.jpg
 ```
-**Render Time:** 39.36 seconds
+**Render Time:** 10.01 seconds
 
 ![OpenChessSet](gallery/chess_board.jpg)
 
@@ -37,7 +37,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_bubblegum.usda gallery\shader_ball_bubblegum.jpg
 ```
-**Render Time:** 16.90 seconds
+**Render Time:** 4.59 seconds
 
 ![StandardShaderBall BubbleGum](gallery/shader_ball_bubblegum.jpg)
 
@@ -48,7 +48,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_glass.usda gallery\shader_ball_glass.jpg
 ```
-**Render Time:** 16.64 seconds
+**Render Time:** 4.53 seconds
 
 ![StandardShaderBall Glass](gallery/shader_ball_glass.jpg)
 
@@ -59,7 +59,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_gold.usda gallery\shader_ball_gold.jpg
 ```
-**Render Time:** 16.61 seconds
+**Render Time:** 4.55 seconds
 
 ![StandardShaderBall Gold](gallery/shader_ball_gold.jpg)
 
@@ -70,7 +70,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\pixar_kitchen.usda gallery\pixar_kitchen.jpg
 ```
-**Render Time:** 8.80 seconds
+**Render Time:** 1.55 seconds
 
 ![Pixar's KitchenSet](gallery/pixar_kitchen.jpg)
 
@@ -81,6 +81,6 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --purposes render --camera mono gallery\collectiveproject001.usda gallery\collectiveproject001.jpg
 ```
-**Render Time:** 13.48 seconds
+**Render Time:** 3.77 seconds
 
 ![Collective Project 001](gallery/collectiveproject001.jpg)

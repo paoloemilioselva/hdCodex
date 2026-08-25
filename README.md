@@ -1,81 +1,124 @@
 # hdCodex
 
-`hdCodex` is a standalone OpenUSD Hydra render delegate backed by a GPU path
-tracer. The primary backend uses Vulkan ray queries so hardware ray traversal is
-available across NVIDIA, AMD, and Intel devices. MaterialX graphs are generated
-to Vulkan GLSL, compiled to SPIR-V at runtime, and cached by content and compiler
-configuration. SPIR-V is performance-optimized by default.
+`hdCodex` is an out-of-tree OpenUSD Hydra render delegate with a fully spectral
+GPU path tracer. It uses Vulkan ray queries for hardware-accelerated traversal
+on NVIDIA, AMD, and Intel GPUs; it does not depend on NVIDIA-only RTX APIs or on
+private OpenUSD/`hdEmbree` implementation details.
 
-The project is intentionally not derived from `hdEmbree`. Hydra adapter classes
-use public OpenUSD APIs in the `pxr` namespace, while all renderer implementation
-types live in the separate `hdcodex` namespace. This keeps the plugin buildable
-outside the OpenUSD source tree.
+The production integrator transports sampled wavelengths from 380–780 nm.
+Authored RGB values and textures are reconstructed into spectra at shading time,
+lights are evaluated spectrally, dielectric IOR can vary by wavelength, and the
+virtual sensor integrates CIE XYZ before converting to linear sRGB. RGB is an
+asset-input and display-output format, not the path-throughput representation.
 
-## Status
+## Important features
 
-This repository is under active development. The current milestone provides a
-loadable Hydra plugin, triangulated scene snapshots, Vulkan BLAS/TLAS builds, a
-five-bounce progressive ray-query path integrator, Hydra color-AOV output, an
-in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
-generation. PointInstancer and nested HdInstancer transforms are expanded from
-public Hydra APIs, including per-instance translation, rotation, scale, and
-matrix primvars. Hydra CPU `extComputation` primvars are evaluated during mesh
-synchronization, providing animated UsdSkel-skinned points and normals.
-MaterialX modules are compiled and retained by Hydra materials;
-the GPU path integrator evaluates constant and image-driven OpenPBR,
-`standard_surface`, and Preview Surface base color, metalness, roughness,
-emission, opacity, tangent-space normals, transmission, dielectric/metal GGX
-specular, coat, and subsurface inputs. Hydra
-face-varying/indexed UV seams are preserved, Hio
-decodes source images, and a partially-bound Vulkan descriptor array provides
-sRGB-aware texture sampling. Authored mesh `normals` and `primvars:normals`
-follow Hydra's precedence rules and support indexed constant, uniform, vertex,
-varying, and face-varying interpolation. Normals are transformed correctly for
-non-uniformly scaled meshes and instances before GPU interpolation. When a mesh
-does not author normals, the adapter generates smooth vertex normals from Hydra's
-public adjacency and smooth-normal utilities.
+### USD and Hydra scene support
 
-Hydra mesh face subsets retain their independent material bindings after
-triangulation, including subsets on animated UsdSkel meshes.
+- Loadable Hydra renderer plugin named **Codex GPU Path Tracer**.
+- Public OpenUSD APIs only, with renderer code isolated in the `hdcodex`
+  namespace.
+- Polygon triangulation with indexed, vertex, varying, uniform, constant, and
+  face-varying primvars.
+- Correct Y-up and Z-up scene handling without modifying authored geometry.
+- Authored normals, generated smooth normals, tangent-space normal maps, and
+  correct inverse-transpose normal transforms under non-uniform scale.
+- PointInstancer and nested Hydra instancing, including translation, quaternion
+  rotation, scale, and matrix instance primvars.
+- Hydra `extComputation` evaluation for animated UsdSkel-skinned points and
+  normals.
+- Hydra geometry subsets retained as per-triangle material assignments, including
+  subsets on skinned meshes.
+- Unbound meshes use Hydra `displayColor` with a default Lambert material and a
+  small rough dielectric specular lobe.
 
-UsdLux `DomeLight` and `RectLight` prims now drive GPU lighting directly. Dome
-lights support HDR textures and the standard lat-long, mirrored-ball, angular,
-and vertical-cross layouts. Rectangle lights support textured emission,
-world-space area normalization, shaping controls, diffuse/specular multipliers,
-and colored distance-limited shadows. When a stage has no supported authored
-lights, hdCodex retains a neutral analytic sky and an oblique default sun at 75°
-elevation. The fallback selects a stable Y-up or Z-up world axis from the
-initial camera and does not move when the camera rotates.
+### Spectral path tracing
 
-Meshes without a material binding use their Hydra `displayColor` as a linear
-base color. These colors are deduplicated into default GPU materials with
-Lambert diffuse and a small rough dielectric specular lobe, preserving useful
-asset-authored viewport colors without treating unsupported bound materials as
-unbound.
+- Correlated three-wavelength hero packets spanning the visible spectrum.
+- Smooth non-negative RGB-to-spectrum reconstruction for USD colors and image
+  textures.
+- CIE XYZ sensor integration and linear-sRGB output.
+- Eight-bounce production paths, two-bounce interactive previews, Russian
+  roulette, progressive accumulation, and deterministic wavelength
+  stratification.
+- Lambert diffuse and energy-partitioned GGX reflection for dielectrics, artistic
+  metalness conductors, and layered coats.
+- Fresnel reflection/refraction, thin-walled transmission, wavelength-dependent
+  Cauchy IOR from OpenPBR dispersion scale and Abbe number, total internal
+  reflection, and nested-interface paths.
+- Beer-law spectral absorption from transmission color/depth and homogeneous
+  interior scattering with Henyey–Greenstein anisotropy.
+- A bounded spectral random walk for subsurface materials, driven by authored
+  color, mean-free-path radius, scale, and anisotropy. This gives materials such
+  as the BubbleGum shader ball actual subsurface transport rather than only a
+  wrapped-diffuse tint.
+- Opacity cutouts participate in primary, continuation, and shadow ray queries;
+  fully opaque scenes use Vulkan's faster opaque traversal path.
 
-Camera motion uses a low-latency preview at half resolution and two bounces.
-When motion stops, the render pass immediately returns to full-resolution,
-five-bounce progressive accumulation. Opaque scenes use Vulkan's opaque
-ray-query path, while scenes containing actual alpha cutouts retain candidate
-opacity evaluation.
+### Materials and textures
 
-The supported graph subset follows direct image connections (including a
-`normalmap` node) into the surface. General MaterialX procedural graphs, UDIMs,
-texture transforms, sheen, a random-walk BSSRDF, and direct callable
-integration of generated MaterialX functions remain future work. The current
-subsurface implementation is a realtime diffusion approximation. Generated
-Vulkan raster stages are compiled and cached, but cannot be invoked directly
-from the compute path tracer; supported inputs are lowered into hdCodex's
-compute material ABI.
+- Direct lowering of the supported OpenPBR, Autodesk Standard Surface, and
+  `UsdPreviewSurface` inputs into the compute material ABI.
+- Constant or image-driven base color, metalness, roughness, emission, opacity,
+  normal, transmission, specular color/weight, coat, and subsurface controls.
+- OpenPBR transmission depth, volume scattering, dispersion, and subsurface
+  radius/anisotropy controls.
+- Hio image decoding, linear/HDR floating-point light textures, sRGB-aware
+  material textures, face-varying UV seams, and descriptor-indexed Vulkan image
+  sampling.
+- MaterialX Vulkan GLSL generation, runtime glslang compilation to SPIR-V, and a
+  deterministic content/configuration cache. Generated raster modules are kept
+  by Hydra materials while the path tracer evaluates the explicitly supported
+  graph subset through its compute ABI.
 
-See [Architecture](docs/architecture.md) for boundaries and implementation
-phases, [Subdivision plan](docs/subdivision-plan.md) for the staged OpenSubdiv
-integration, [Gallery](gallery.md) for versioned reference renders and timings,
-and [Building](docs/building.md) for local dependency setup.
+### Lighting
 
-## Quick start
+- UsdLux `DomeLight` and `RectLight` ingestion.
+- HDR dome textures with lat-long, mirrored-ball, angular, and vertical-cross
+  layouts.
+- Rectangle-light transforms, textured emission, area normalization, shaping,
+  diffuse/specular multipliers, and colored distance-limited shadows.
+- Stable world-space fallback sky plus a shadow-casting sun at 75° elevation
+  when the stage has no supported authored lights. The fallback selects Y-up or
+  Z-up once and does not rotate with the camera.
 
-The dependency-free core and tests can be built immediately:
+### Interaction and performance
+
+- Camera motion switches to a half-resolution, two-bounce preview and returns to
+  full resolution when motion stops.
+- Eight progressive samples are evaluated per compute dispatch, removing most
+  command submissions, fence waits, and full-image GPU readbacks.
+- Static scene and accumulation data use device-local buffers; staging resources,
+  command buffers, fences, descriptor sets, and shader-cache entries are reused.
+- The checked-in 512 px Gold shader-ball benchmark dropped from 16.61 s to about
+  5 s on the development machine before the final gallery refresh.
+
+## Current architecture and limits
+
+Hydra adapters publish immutable scene snapshots to `VulkanPathTracer`. The
+current backend flattens visible world-space geometry into one BLAS and builds a
+single-instance TLAS when the published scene changes. Camera-only changes reuse
+the acceleration structures. Per-mesh BLAS caching, native TLAS instances,
+deforming-BLAS refits, overlapped readback, ray differentials/texture LOD, UDIMs,
+subdivision refinement, arbitrary MaterialX procedural graphs, and more UsdLux
+light types remain future work.
+
+Vulkan ray queries are the primary backend because they expose the same hardware
+RT units through a portable API and keep traversal inside the compute integrator.
+A `VK_KHR_ray_tracing_pipeline` backend should only replace it after an
+apples-to-apples benchmark on representative gallery scenes. A deferred-raster
+primary pass plus path-traced secondary transport is deliberately postponed; its
+design and validation stages are recorded in the
+[hybrid renderer plan](docs/hybrid-renderer-plan.md).
+
+See [Architecture](docs/architecture.md) for implementation boundaries,
+[Building](docs/building.md) for dependency setup,
+[Subdivision plan](docs/subdivision-plan.md) for planned OpenSubdiv integration,
+and [Gallery](gallery.md) for versioned reference renders and timings.
+
+## Build and test
+
+The dependency-free core can be built with CMake presets:
 
 ```powershell
 cmake --preset core-only
@@ -83,10 +126,8 @@ cmake --build --preset core-only
 ctest --preset core-only
 ```
 
-For the complete delegate, configure an OpenUSD install and enable the optional
-dependency bootstrap described in `docs/building.md`.
-
-On this workstation the complete standalone flow is:
+For the complete delegate, configure the standalone OpenUSD/Vulkan dependencies
+described in `docs/building.md`. On the development workstation:
 
 ```bat
 compile.bat
@@ -96,6 +137,22 @@ render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda ga
 launch_codex.bat
 ```
 
-`render_test.bat` defaults to the supplied OpenChessSet asset and accepts an
-optional scene and output path. All USD-facing scripts call
-`setup_usd_env.bat`; none use Houdini libraries.
+All USD-facing scripts call `setup_usd_env.bat`, including Python `pxr` tools.
+The scripts do not use Houdini libraries. `render_codex.bat` accepts normal
+`usdrecord` arguments and always selects the Codex delegate with camera-lighting
+disabled so authored or fallback lighting is tested.
+
+## Regression gallery
+
+The images in `gallery/` are checked-in visual baselines. They cover:
+
+- Intel Sponza for a large textured architectural scene.
+- OpenChessSet for instancing, HDR lighting, and many materials.
+- StandardShaderBall Glass, Gold, and BubbleGum for spectral dielectric,
+  conductor, texture, and subsurface behavior.
+- Pixar KitchenSet for Z-up coordinates and per-mesh `displayColor` fallback.
+- Collective Project 001 for UsdSkel deformation and mesh-subset materials.
+
+Run the command printed beside each image in `gallery.md`, record wall time, and
+commit both the changed images and timing table whenever an intentional renderer
+change affects output.

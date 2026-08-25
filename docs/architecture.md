@@ -65,8 +65,11 @@ cutouts mark their geometry and ray queries opaque, bypassing opacity candidate
 evaluation for primary, continuation, and shadow rays. Materials also skip
 inactive transmission, subsurface, and coat work.
 
-The integrator traces up to five bounces and evaluates Lambert diffuse plus
-dielectric, metal, and layered-coat GGX reflection. It uploads as many as 64
+The production integrator traces up to eight bounces (with a twelve-bounce GPU
+limit) and evaluates Lambert diffuse plus dielectric, metal, and layered-coat
+GGX reflection. It transports correlated sampled wavelengths, reconstructs
+authored RGB inputs into spectra, and integrates CIE XYZ only at the camera. It
+uploads as many as 64
 visible UsdLux DomeLight and RectLight records with their color temperature,
 intensity/exposure, diffuse/specular controls, shaping, texture, transform, and
 shadow parameters. Dome textures are evaluated for background rays and sampled
@@ -81,7 +84,9 @@ azimuth. This keeps `usdrecord --disableCameraLight` useful for unlit assets
 without mixing fallback illumination into authored-light scenes. The Y-up or
 Z-up fallback axis is inferred once from the initial camera; the sky and sun
 then remain fixed in world space as the camera moves. The renderer
-accumulates one stochastic sample per Hydra execute and converges at 64 samples.
+evaluates eight progressive samples per Vulkan dispatch and converges at 32
+spatial samples. Each spatial path is evaluated as a correlated three-wavelength
+packet with deterministic spectral stratification.
 Scene or camera changes reset accumulation. Geometry is flattened into one
 world-space BLAS for this first functional path; per-mesh BLAS caching and TLAS
 instance updates remain a performance optimization.
@@ -89,7 +94,7 @@ instance updates remain a performance optimization.
 While the camera changes, the render pass traces at half width and height with a
 two-bounce limit, then nearest-upscales the preview into the Hydra color AOV.
 Once the camera is stationary it restarts at full resolution and the normal
-five-bounce limit, so interactive quality does not alter the converged result.
+eight-bounce limit, so interactive quality does not alter the converged result.
 
 Hydra instancing is flattened at scene synchronization time as well. The
 renderer-owned `HdCodexInstancer` composes the instancer transform with indexed
@@ -156,10 +161,14 @@ order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
 and accessed through a partially-bound descriptor array currently capped at
 256 textures.
 Opacity participates in primary and shadow ray-query candidate confirmation.
-Transmission supports color, IOR/Fresnel refraction, and thin-walled surfaces.
+Transmission supports spectral color, wavelength-dependent Cauchy IOR from
+OpenPBR dispersion controls, Fresnel refraction, thin-walled surfaces, Beer-law
+absorption, and homogeneous interior scattering.
 Specular and coat use energy-partitioned GGX lobes for direct and indirect
-lighting. Standard Surface and OpenPBR subsurface controls are lowered to a
-realtime wrapped-diffuse approximation; this is not yet a random-walk BSSRDF.
+lighting. Standard Surface and OpenPBR subsurface controls drive a bounded
+spectral random walk using authored mean-free-path radius, color, scale, and
+anisotropy. A wrapped direct-light term remains as a low-variance surface
+contribution.
 
 Meshes with no material binding retain the linear `displayColor` supplied by
 Hydra. The scene builder deduplicates these colors and assigns a default
@@ -170,7 +179,8 @@ unsupported material continues through the normal material fallback path.
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute
 shader, so hdCodex separately lowers the supported graph subset into its compute
-ABI. Arbitrary procedural nodes, UDIMs, texture transforms, sheen, a full BSSRDF,
+ABI. Arbitrary procedural nodes, UDIMs, texture transforms, sheen, an unbounded
+multi-scatter BSSRDF,
 and a general MaterialX-to-path-tracer callable ABI are not implemented.
 
 ## Subdivision surfaces
@@ -184,8 +194,9 @@ requirements, tests, and performance phases.
 ## Threading
 
 Scene mutation and publication are mutex-protected. Hydra executes GPU work on
-the render-pass thread. The backend retains a command buffer, waits on a scoped
-fence, copies device-local accumulation into a host-visible staging buffer, and
+the render-pass thread. The backend retains a command buffer, evaluates a batch
+of progressive samples per submission, waits on a scoped fence, copies the
+device-local accumulation into a host-visible staging buffer once per batch, and
 bulk-copies RGBA32F into the Hydra color AOV. A multi-buffered one-frame-latency
 readback or direct graphics-API interop would be required to remove the final
 synchronous CPU handoff. Per-mesh BLAS reuse, native TLAS instances, GPU timestamp

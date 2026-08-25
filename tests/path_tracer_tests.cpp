@@ -64,6 +64,19 @@ try {
         .srgb = false,
         .rgbaFloat = {2.0F, 2.0F, 2.0F, 1.0F},
     });
+    scene->textures.push_back({
+        .id = "spectral-gradient#hdr",
+        .sourcePath = "synthetic",
+        .width = 4,
+        .height = 1,
+        .srgb = false,
+        .rgbaFloat = {
+            3.0F, 0.02F, 0.02F, 1.0F,
+            0.02F, 3.0F, 0.02F, 1.0F,
+            0.02F, 0.02F, 3.0F, 1.0F,
+            3.0F, 3.0F, 3.0F, 1.0F,
+        },
+    });
     scene->lights.push_back({
         .id = "/dome",
         .type = hdcodex::SceneLightType::Dome,
@@ -98,13 +111,20 @@ try {
     constexpr std::uint32_t width = 64;
     constexpr std::uint32_t height = 64;
     const auto renderSamples = [&](std::uint32_t sampleCount) {
-        std::vector<float> result;
-        for (std::uint32_t sample = 0; sample < sampleCount; ++sample) {
-            result = tracer.Render(camera, width, height, sample);
-        }
-        return result;
+        return tracer.Render(camera, width, height, 0U, 8U, sampleCount);
     };
-    const auto pixels = tracer.Render(camera, width, height, 0);
+    const auto sequentialFirst = tracer.Render(camera, width, height, 0U);
+    const auto sequentialTwo = tracer.Render(camera, width, height, 1U);
+    const auto batchedTwo = tracer.Render(camera, width, height, 0U, 8U, 2U);
+    Check(batchedTwo.size() == sequentialTwo.size(), "batched image size changed");
+    for (std::size_t index = 0; index < batchedTwo.size(); ++index) {
+        Check(std::abs(batchedTwo[index] - sequentialTwo[index]) < 1e-5F,
+              "batched samples changed the progressive estimator");
+    }
+    Check(sequentialFirst.size() == batchedTwo.size(),
+          "single-sample image size changed");
+
+    const auto pixels = renderSamples(64U);
     Check(pixels.size() == width * height * 4U, "path tracer returned wrong image size");
     for (float value : pixels) Check(std::isfinite(value), "path tracer returned non-finite output");
 
@@ -118,15 +138,8 @@ try {
           "path tracer did not sample the bound base-color texture");
     Check(pixels[center + 3] == 1.0F, "path tracer alpha is not one");
 
-    const auto progressive = tracer.Render(camera, width, height, 1);
+    const auto progressive = tracer.Render(camera, width, height, 64U);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
-
-    const auto batched = tracer.Render(camera, width, height, 0, 5U, 2U);
-    Check(batched.size() == progressive.size(), "batched image size changed");
-    for (std::size_t index = 0; index < batched.size(); ++index) {
-        Check(std::abs(batched[index] - progressive[index]) < 1e-5F,
-              "batched samples changed the progressive estimator");
-    }
 
     const auto interactive = tracer.Render(camera, width / 2U, height / 2U, 0U, 2U);
     Check(interactive.size() == width * height,
@@ -138,7 +151,7 @@ try {
         0.6F, 0.85F, 0.35F,
     };
     tracer.SetScene(scene);
-    const auto authoredNormals = tracer.Render(camera, width, height, 0);
+    const auto authoredNormals = renderSamples(64U);
     Check(std::abs(authoredNormals[center + 1] - pixels[center + 1]) > 0.02F,
           "authored mesh normals did not affect GPU shading");
     scene->meshes.front().normals.clear();
@@ -157,14 +170,18 @@ try {
     scene->materials.front().specularWeight = 0.0F;
     tracer.SetScene(scene);
     const auto matteBlack = renderSamples(64U);
-    Check(glossy[center] > matteBlack[center] + 0.1F,
+    const float glossyLuma = glossy[center] + glossy[center + 1] + glossy[center + 2];
+    const float matteBlackLuma = matteBlack[center] + matteBlack[center + 1] +
+        matteBlack[center + 2];
+    Check(glossyLuma > matteBlackLuma + 0.1F,
           "dielectric GGX specular highlight was not evaluated");
 
     scene->materials.front().coat = 1.0F;
     scene->materials.front().coatRoughness = 0.08F;
     tracer.SetScene(scene);
     const auto coated = renderSamples(64U);
-    Check(coated[center] > matteBlack[center] + 0.1F,
+    const float coatedLuma = coated[center] + coated[center + 1] + coated[center + 2];
+    Check(coatedLuma > matteBlackLuma + 0.1F,
           "Standard Surface coat highlight was not evaluated");
 
     scene->meshes.front().normals.clear();
@@ -178,7 +195,7 @@ try {
     scene->materials.front().subsurfaceScale = 0.0F;
     scene->materials.front().subsurfaceTexture = "scatter#raw";
     tracer.SetScene(scene);
-    const auto scattered = tracer.Render(camera, width, height, 0);
+    const auto scattered = renderSamples(64U);
     Check(scattered[center + 2] > scattered[center + 1] * 1.5F,
           "subsurface parameters did not reach the GPU material ABI");
 
@@ -187,7 +204,7 @@ try {
 
     scene->materials.front().opacity = 0.0F;
     tracer.SetScene(scene);
-    const auto cutout = tracer.Render(camera, width, height, 0);
+    const auto cutout = renderSamples(64U);
     Check(cutout[center + 2] > cutout[center + 1],
           "zero-opacity surface did not reveal the blue environment");
 
@@ -198,9 +215,32 @@ try {
     scene->materials.front().metalness = 0.0F;
     scene->materials.front().specularWeight = 0.0F;
     tracer.SetScene(scene);
-    const auto transmitted = tracer.Render(camera, width, height, 0);
+    const auto transmitted = renderSamples(64U);
     Check(transmitted[center] > transmitted[center + 1] * 2.0F,
           "thin-walled transmission did not tint the environment");
+
+    scene->materials.front().thinWalled = false;
+    scene->materials.front().transmissionColor = {1.0F, 1.0F, 1.0F};
+    scene->materials.front().transmissionDispersionScale = 0.0F;
+    scene->lights.resize(1U);
+    scene->lights.front().color = {1.0F, 1.0F, 1.0F};
+    scene->lights.front().intensity = 1.0F;
+    scene->lights.front().texture = "spectral-gradient#hdr";
+    tracer.SetScene(scene);
+    const auto nondispersive = renderSamples(64U);
+    scene->materials.front().transmissionDispersionScale = 1.0F;
+    scene->materials.front().transmissionDispersionAbbeNumber = 9.0F;
+    tracer.SetScene(scene);
+    const auto dispersive = renderSamples(64U);
+    float dispersionDifference = 0.0F;
+    for (std::size_t index = 0; index < dispersive.size(); index += 4U) {
+        dispersionDifference +=
+            std::abs(dispersive[index] - nondispersive[index]) +
+            std::abs(dispersive[index + 1U] - nondispersive[index + 1U]) +
+            std::abs(dispersive[index + 2U] - nondispersive[index + 2U]);
+    }
+    Check(dispersionDifference > 0.1F,
+          "wavelength-dependent dielectric IOR did not affect refraction");
 
     scene->lights.clear();
     scene->meshes.front().materialId.clear();
@@ -211,7 +251,7 @@ try {
     scene->materials.front().transmission = 0.0F;
     scene->materials.front().thinWalled = false;
     tracer.SetScene(scene);
-    const auto fallbackLighting = tracer.Render(camera, width, height, 0);
+    const auto fallbackLighting = renderSamples(64U);
     const float fallbackCenterLuma = fallbackLighting[center] +
         fallbackLighting[center + 1] + fallbackLighting[center + 2];
     const float fallbackCornerLuma = fallbackLighting[corner] +
@@ -236,7 +276,8 @@ try {
         .horizontal = {2.0F, 0.0F, 0.0F},
         .vertical = {0.0F, 0.0F, 2.0F},
     };
-    const auto zUpFallback = zUpTracer.Render(zUpCamera, width, height, 0);
+    const auto zUpFallback = zUpTracer.Render(
+        zUpCamera, width, height, 0U, 8U, 64U);
     const float zUpCenterLuma = zUpFallback[center] +
         zUpFallback[center + 1] + zUpFallback[center + 2];
     Check(zUpCenterLuma > 0.05F,

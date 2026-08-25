@@ -19,7 +19,7 @@ namespace {
 
 constexpr std::uint32_t kMaxMaterialTextures = 256U;
 constexpr std::uint32_t kMissingTexture = UINT32_MAX;
-constexpr std::uint32_t kMaxPathBounces = 5U;
+constexpr std::uint32_t kMaxPathBounces = 12U;
 constexpr std::uint32_t kMaxLights = 64U;
 constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
 constexpr std::uint32_t kLightCountShift = 16U;
@@ -46,6 +46,8 @@ struct GpuMaterial {
     vec4 specularWeightColor;
     vec4 coatWeightRoughnessIor;
     vec4 coatColor;
+    vec4 transmissionMedium;
+    vec4 transmissionScatter;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
@@ -95,6 +97,74 @@ float randomFloat(inout uint state)
     state = hashState(state);
     return float(state) * (1.0 / 4294967296.0);
 }
+
+// Non-negative RGB-to-spectrum reconstruction. Equal RGB values reconstruct
+// to a flat reflectance while saturated colors become smooth, overlapping
+// spectral lobes rather than three independent transport channels.
+float reconstructRgb(vec3 rgb, float wavelength)
+{
+    vec3 basis = vec3(
+        exp(-0.5 * pow((wavelength - 620.0) / 30.0, 2.0)),
+        exp(-0.5 * pow((wavelength - 535.0) / 25.0, 2.0)),
+        exp(-0.5 * pow((wavelength - 450.0) / 20.0, 2.0)));
+    return dot(max(rgb, vec3(0.0)), basis) /
+        max(dot(vec3(1.0), basis), 1e-5);
+}
+
+float reflectanceSpectrum(vec3 rgb, float wavelength)
+{
+    return clamp(reconstructRgb(rgb, wavelength), 0.0, 1.0);
+}
+
+float illuminantSpectrum(vec3 rgb, float wavelength)
+{
+    // A 6504 K daylight-like reference makes authored neutral RGB lights
+    // integrate to the white point expected by linear sRGB output.
+    const float temperature = 6504.0;
+    const float c2 = 1.4387769e7; // nm K
+    const float referenceWavelength = 560.0;
+    float planck = pow(referenceWavelength / wavelength, 5.0) *
+        (exp(c2 / (referenceWavelength * temperature)) - 1.0) /
+        max(exp(c2 / (wavelength * temperature)) - 1.0, 1e-5);
+    return max(reconstructRgb(rgb, wavelength) * planck, 0.0);
+}
+
+vec3 cieXyz(float wavelength)
+{
+    float tx1 = (wavelength - 442.0) *
+        (wavelength < 442.0 ? 0.0624 : 0.0374);
+    float tx2 = (wavelength - 599.8) *
+        (wavelength < 599.8 ? 0.0264 : 0.0323);
+    float tx3 = (wavelength - 501.1) *
+        (wavelength < 501.1 ? 0.0490 : 0.0382);
+    float ty1 = (wavelength - 568.8) *
+        (wavelength < 568.8 ? 0.0213 : 0.0247);
+    float ty2 = (wavelength - 530.9) *
+        (wavelength < 530.9 ? 0.0613 : 0.0322);
+    float tz1 = (wavelength - 437.0) *
+        (wavelength < 437.0 ? 0.0845 : 0.0278);
+    float tz2 = (wavelength - 459.0) *
+        (wavelength < 459.0 ? 0.0385 : 0.0725);
+    return vec3(
+        0.362 * exp(-0.5 * tx1 * tx1) +
+        1.056 * exp(-0.5 * tx2 * tx2) -
+        0.065 * exp(-0.5 * tx3 * tx3),
+        0.821 * exp(-0.5 * ty1 * ty1) +
+        0.286 * exp(-0.5 * ty2 * ty2),
+        1.217 * exp(-0.5 * tz1 * tz1) +
+        0.681 * exp(-0.5 * tz2 * tz2));
+}
+
+vec3 spectralSensor(float wavelength)
+{
+    vec3 xyz = cieXyz(wavelength) * (400.0 / 106.856895);
+    return vec3(
+         3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
+        -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
+         0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z);
+}
+)glsl"
+R"glsl(
 
 vec3 cosineHemisphere(vec3 normal, inout uint state)
 {
@@ -297,6 +367,8 @@ float surfaceOpacity(uint primitive, vec2 barycentrics)
     return clamp(sampleMaterialTexture(material.textureIndices1.x, uv,
         vec4(material.transmissionOpacityIor.y)).r, 0.0, 1.0);
 }
+)glsl"
+R"glsl(
 
 vec3 applyNormalMap(uint textureIndex, vec2 uv, vec3 geometricNormal,
                     vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2)
@@ -416,6 +488,98 @@ float shapingConeFactor(GpuLight light, float cosine)
          1.0 - smoothstep(inner, outer, angle));
     return cone;
 }
+
+float dispersedIor(float iorAtD, float scale, float abbeNumber,
+                   float wavelength)
+{
+    if (scale <= 0.0 || abbeNumber <= 1.0) return iorAtD;
+    const float lambdaF = 486.13;
+    const float lambdaD = 587.56;
+    const float lambdaC = 656.27;
+    float reciprocalDelta = 1.0 / (lambdaF * lambdaF) -
+        1.0 / (lambdaC * lambdaC);
+    float b = (iorAtD - 1.0) /
+        max(abbeNumber * reciprocalDelta, 1e-8);
+    float a = iorAtD - b / (lambdaD * lambdaD);
+    float cauchyIor = a + b / (wavelength * wavelength);
+    return mix(iorAtD, cauchyIor, clamp(scale, 0.0, 1.0));
+}
+
+vec3 sampleHenyeyGreenstein(vec3 forward, float anisotropy, inout uint state)
+{
+    float g = clamp(anisotropy, -0.95, 0.95);
+    float u = randomFloat(state);
+    float cosine = abs(g) < 1e-3 ? 1.0 - 2.0 * u :
+        (1.0 + g * g - pow((1.0 - g * g) /
+         (1.0 - g + 2.0 * g * u), 2.0)) / (2.0 * g);
+    float sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+    float phi = 6.28318530718 * randomFloat(state);
+    vec3 w = normalize(forward);
+    vec3 tangent = normalize(abs(w.z) < 0.999
+        ? cross(w, vec3(0.0, 0.0, 1.0))
+        : cross(w, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = cross(w, tangent);
+    return normalize(tangent * (cos(phi) * sine) +
+                     bitangent * (sin(phi) * sine) + w * cosine);
+}
+
+bool traceOpaqueBoundary(vec3 origin, vec3 direction,
+                         out vec3 boundary, out vec3 boundaryNormal,
+                         out float boundaryDistance)
+{
+    rayQueryEXT boundaryQuery;
+    rayQueryInitializeEXT(boundaryQuery, scene, gl_RayFlagsOpaqueEXT,
+        0xff, origin, 0.001, direction, 10000.0);
+    while (rayQueryProceedEXT(boundaryQuery)) {}
+    if (rayQueryGetIntersectionTypeEXT(boundaryQuery, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) return false;
+    uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(boundaryQuery, true);
+    uint i0 = indices[primitive * 3u + 0u];
+    uint i1 = indices[primitive * 3u + 1u];
+    uint i2 = indices[primitive * 3u + 2u];
+    boundaryDistance = rayQueryGetIntersectionTEXT(boundaryQuery, true);
+    boundary = origin + direction * boundaryDistance;
+    boundaryNormal = normalize(cross(
+        positions[i1].xyz - positions[i0].xyz,
+        positions[i2].xyz - positions[i0].xyz));
+    if (dot(boundaryNormal, direction) > 0.0) boundaryNormal = -boundaryNormal;
+    return true;
+}
+
+bool randomWalkSubsurface(vec3 entry, vec3 outwardNormal,
+                          float meanFreePath, float albedo,
+                          float anisotropy, inout uint state,
+                          out vec3 exitOrigin, out vec3 exitDirection,
+                          out float attenuation)
+{
+    float radius = max(meanFreePath, 0.001);
+    float sigmaS = 1.0 / radius;
+    float sigmaA = -log(clamp(albedo, 0.001, 0.9999)) / radius;
+    vec3 origin = entry - outwardNormal * 0.003;
+    vec3 direction = cosineHemisphere(-outwardNormal, state);
+    attenuation = 1.0;
+    for (int step = 0; step < 8; ++step) {
+        vec3 boundary;
+        vec3 boundaryNormal;
+        float boundaryDistance;
+        if (!traceOpaqueBoundary(origin, direction, boundary,
+                                 boundaryNormal, boundaryDistance)) return false;
+        float scatterDistance = -log(max(1.0 - randomFloat(state), 1e-6)) /
+            sigmaS;
+        bool forceExit = step == 7;
+        float travel = forceExit ? boundaryDistance :
+            min(scatterDistance, boundaryDistance);
+        attenuation *= exp(-sigmaA * travel);
+        if (forceExit || scatterDistance >= boundaryDistance) {
+            exitDirection = direction;
+            exitOrigin = boundary + direction * 0.003;
+            return true;
+        }
+        origin += direction * scatterDistance;
+        direction = sampleHenyeyGreenstein(direction, anisotropy, state);
+    }
+    return false;
+}
 )glsl"
 R"glsl(
 void main()
@@ -428,7 +592,15 @@ void main()
     for (uint sampleOffset = 0u; sampleOffset < sampleCount; ++sampleOffset)
     {
     uint sampleNumber = camera.frame.z + sampleOffset;
+    vec3 spectralSampleRadiance = vec3(0.0);
+    for (uint spectralLane = 0u; spectralLane < 3u; ++spectralLane)
+    {
     uint rng = hashState(index ^ (sampleNumber * 0x9e3779b9u) ^ 0xa511e9b3u);
+    float wavelengthShift = float(hashState(index ^ 0x68bc21ebu)) *
+        (1.0 / 4294967296.0);
+    float wavelength = 380.0 + 400.0 * fract(
+        wavelengthShift + (float(sampleNumber & 31u) + 0.5) / 32.0 +
+        float(spectralLane) / 3.0);
     vec2 jitter = vec2(randomFloat(rng), randomFloat(rng));
     vec2 uv = (vec2(pixel) + jitter) / vec2(camera.frame.xy);
 
@@ -438,8 +610,12 @@ void main()
     vec3 throughput = vec3(1.0);
     vec3 radiance = vec3(0.0);
     bool environmentOnMiss = true;
+    bool insideMedium = false;
+    float mediumAbsorption = 0.0;
+    float mediumScattering = 0.0;
+    float mediumAnisotropy = 0.0;
 
-    int maxBounces = int(clamp(camera.frame.w & 0xffu, 1u, 5u));
+    int maxBounces = int(clamp(camera.frame.w & 0xffu, 1u, 12u));
     for (int bounce = 0; bounce < maxBounces; ++bounce)
     {
         rayQueryEXT query;
@@ -463,7 +639,8 @@ void main()
             gl_RayQueryCommittedIntersectionNoneEXT)
         {
             if (environmentOnMiss) {
-                radiance += throughput * environment(rayDirection);
+                radiance += throughput * vec3(illuminantSpectrum(
+                    environment(rayDirection), wavelength));
             }
             break;
         }
@@ -490,10 +667,26 @@ void main()
 
         float distance = rayQueryGetIntersectionTEXT(query, true);
         vec3 hit = rayOrigin + rayDirection * distance;
+        if (insideMedium) {
+            if (mediumScattering > 0.0) {
+                float scatterDistance = -log(max(
+                    1.0 - randomFloat(rng), 1e-6)) / mediumScattering;
+                if (scatterDistance < distance) {
+                    throughput *= exp(-mediumAbsorption * scatterDistance);
+                    rayOrigin += rayDirection * scatterDistance;
+                    rayDirection = sampleHenyeyGreenstein(
+                        rayDirection, mediumAnisotropy, rng);
+                    environmentOnMiss = true;
+                    continue;
+                }
+            }
+            throughput *= exp(-mediumAbsorption * distance);
+        }
         GpuMaterial material = materials[triangleMaterials[primitive]];
-        vec3 baseColor = sampleMaterialTexture(
+        vec3 baseColorRgb = sampleMaterialTexture(
             material.textureIndices0.x, surfaceUv,
             vec4(material.baseColorMetalness.rgb, 1.0)).rgb;
+        vec3 baseColor = vec3(reflectanceSpectrum(baseColorRgb, wavelength));
         float metalness = clamp(sampleMaterialTexture(
             material.textureIndices0.y, surfaceUv,
             vec4(material.baseColorMetalness.a)).r, 0.0, 1.0);
@@ -502,46 +695,56 @@ void main()
             vec4(material.emissionRoughness.a)).r, 0.02, 1.0);
         normal = applyNormalMap(material.textureIndices1.y, surfaceUv, normal,
                                 p0, p1, p2, uv0, uv1, uv2);
-        vec3 emission = material.textureIndices0.w == 0xffffffffu
+        vec3 emissionRgb = material.textureIndices0.w == 0xffffffffu
             ? material.emissionRoughness.rgb
             : sampleMaterialTexture(material.textureIndices0.w, surfaceUv, vec4(0.0)).rgb *
                 material.transmissionOpacityIor.w;
+        vec3 emission = vec3(illuminantSpectrum(emissionRgb, wavelength));
         radiance += throughput * emission;
 
         float transmission = clamp(material.transmissionOpacityIor.x, 0.0, 1.0);
-        vec3 transmissionColor = material.transmissionColorThinWalled.rgb;
+        vec3 transmissionColorRgb = material.transmissionColorThinWalled.rgb;
         if (transmission > 0.0) {
-            transmissionColor = sampleMaterialTexture(
+            transmissionColorRgb = sampleMaterialTexture(
                 material.textureIndices1.z, surfaceUv,
-                vec4(transmissionColor, 1.0)).rgb;
+                vec4(transmissionColorRgb, 1.0)).rgb;
         }
+        vec3 transmissionColor = vec3(reflectanceSpectrum(
+            transmissionColorRgb, wavelength));
         float subsurface = 0.0;
         vec3 diffuseColor = baseColor;
+        vec3 subsurfaceColorRgb = material.subsurfaceColor.rgb;
+        vec3 subsurfaceRadiusRgb = max(
+            material.subsurfaceRadius.rgb, vec3(0.001));
         if (material.subsurfaceWeightScale.x > 0.0 ||
             material.textureIndices2.x != 0xffffffffu) {
             subsurface = clamp(sampleMaterialTexture(
                 material.textureIndices2.x, surfaceUv,
                 vec4(material.subsurfaceWeightScale.x)).r, 0.0, 1.0);
             if (subsurface > 0.0) {
-                vec3 subsurfaceColor = sampleMaterialTexture(
+                subsurfaceColorRgb = sampleMaterialTexture(
                     material.textureIndices2.y, surfaceUv,
                     vec4(material.subsurfaceColor.rgb, 1.0)).rgb;
-                vec3 subsurfaceRadius = max(sampleMaterialTexture(
+                subsurfaceRadiusRgb = max(sampleMaterialTexture(
                     material.textureIndices2.z, surfaceUv,
                     vec4(material.subsurfaceRadius.rgb, 1.0)).rgb, vec3(0.001));
-                vec3 subsurfaceAttenuation = exp(
-                    -max(material.subsurfaceWeightScale.y, 0.0) / subsurfaceRadius);
-                diffuseColor = mix(baseColor,
-                    subsurfaceColor * subsurfaceAttenuation, subsurface);
+                vec3 subsurfaceColor = vec3(reflectanceSpectrum(
+                    subsurfaceColorRgb, wavelength));
+                diffuseColor = mix(baseColor, subsurfaceColor, subsurface);
             }
         }
-        float ior = max(material.transmissionOpacityIor.z, 1.0001);
+        float ior = dispersedIor(
+            max(material.transmissionOpacityIor.z, 1.0001),
+            material.transmissionMedium.z,
+            material.transmissionMedium.w, wavelength);
         float specularWeight = clamp(sampleMaterialTexture(
             material.textureIndices3.x, surfaceUv,
             vec4(material.specularWeightColor.x)).r, 0.0, 1.0);
-        vec3 specularColor = sampleMaterialTexture(
+        vec3 specularColorRgb = sampleMaterialTexture(
             material.textureIndices3.y, surfaceUv,
             vec4(material.specularWeightColor.yzw, 1.0)).rgb;
+        vec3 specularColor = vec3(reflectanceSpectrum(
+            specularColorRgb, wavelength));
         float dielectricReflectance = (ior - 1.0) / (ior + 1.0);
         dielectricReflectance *= dielectricReflectance;
         vec3 f0 = mix(clamp(vec3(dielectricReflectance * specularWeight) *
@@ -556,9 +759,11 @@ void main()
                 material.textureIndices3.z, surfaceUv,
                 vec4(material.coatWeightRoughnessIor.x)).r, 0.0, 1.0);
             if (coat > 0.0) {
-                vec3 coatColor = sampleMaterialTexture(
+                vec3 coatColorRgb = sampleMaterialTexture(
                     material.textureIndices3.w, surfaceUv,
                     vec4(material.coatColor.rgb, 1.0)).rgb;
+                vec3 coatColor = vec3(reflectanceSpectrum(
+                    coatColorRgb, wavelength));
                 coatRoughness = clamp(sampleMaterialTexture(
                     material.textureIndices4.x, surfaceUv,
                     vec4(coatRoughness)).r, 0.02, 1.0);
@@ -572,6 +777,8 @@ void main()
 
         vec3 viewDirection = normalize(-rayDirection);
         uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+)glsl"
+R"glsl(
         if (lightCount > 0u) {
             uint lightIndex = min(uint(randomFloat(rng) * float(lightCount)),
                                   lightCount - 1u);
@@ -612,17 +819,24 @@ void main()
                 }
             }
             if (inversePdf > 0.0) {
+                float sampledSpecularScale =
+                    light.textureInfo.z == 0u && roughness < 0.2
+                    ? 0.0 : light.controls.y;
                 vec3 direct = evaluateDirectSurface(
                     normal, viewDirection, lightDirection, diffuseColor,
                     transmission, subsurface, metalness, roughness, f0,
                     coat, coatRoughness, coatF0,
-                    light.controls.x, light.controls.y);
+                    light.controls.x, sampledSpecularScale);
                 if (any(greaterThan(direct, vec3(0.0)))) {
                     vec3 visibility = shadowVisibility(
                         hit + orientedGeometricNormal * 0.002,
                         lightDirection, maximumShadowDistance, light);
-                    radiance += throughput * direct * lightRadiance *
-                        visibility * inversePdf * float(lightCount);
+                    vec3 spectralLight = vec3(illuminantSpectrum(
+                        lightRadiance, wavelength));
+                    vec3 spectralVisibility = vec3(reflectanceSpectrum(
+                        visibility, wavelength));
+                    radiance += throughput * direct * spectralLight *
+                        spectralVisibility * inversePdf * float(lightCount);
                 }
             }
         } else {
@@ -644,7 +858,28 @@ void main()
                     hit + orientedGeometricNormal * 0.002,
                     sunDirection, 10000.0, lights[0]);
                 const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
-                radiance += throughput * direct * sunRadiance * visibility;
+                vec3 spectralSun = vec3(illuminantSpectrum(
+                    sunRadiance, wavelength));
+                vec3 spectralVisibility = vec3(reflectanceSpectrum(
+                    visibility, wavelength));
+                radiance += throughput * direct * spectralSun * spectralVisibility;
+            }
+            vec3 skyDirection = cosineHemisphere(normal, rng);
+            vec3 skyDirect = evaluateDirectSurface(
+                normal, viewDirection, skyDirection, diffuseColor,
+                transmission, subsurface, metalness, roughness, f0,
+                coat, coatRoughness, coatF0, 1.0, 0.0);
+            if (any(greaterThan(skyDirect, vec3(0.0)))) {
+                vec3 visibility = shadowVisibility(
+                    hit + orientedGeometricNormal * 0.002,
+                    skyDirection, 10000.0, lights[0]);
+                vec3 spectralSky = vec3(illuminantSpectrum(
+                    environment(skyDirection), wavelength));
+                vec3 spectralVisibility = vec3(reflectanceSpectrum(
+                    visibility, wavelength));
+                radiance += throughput * skyDirect * spectralSky *
+                    spectralVisibility * (3.14159265359 /
+                    max(dot(normal, skyDirection), 1e-4));
             }
         }
 
@@ -657,12 +892,34 @@ void main()
             vec3 refracted = refract(rayDirection, normal, eta);
             bool totalInternalReflection = dot(refracted, refracted) < 1e-8;
             bool thinWalled = material.transmissionColorThinWalled.w > 0.5;
+            bool refractedThroughBoundary = false;
             if (totalInternalReflection || randomFloat(rng) < fresnel) {
                 rayDirection = reflect(rayDirection, normal);
             } else {
                 rayDirection = thinWalled ? rayDirection : normalize(refracted);
+                refractedThroughBoundary = !thinWalled;
             }
-            throughput *= transmissionColor;
+            float transmissionDepth = max(material.transmissionMedium.x, 0.0);
+            throughput *= transmissionDepth > 0.0
+                ? vec3(1.0) : transmissionColor;
+            if (refractedThroughBoundary) {
+                if (frontFace) {
+                    float spectralTransmission = max(
+                        transmissionColor.r, 0.001);
+                    mediumAbsorption = transmissionDepth > 0.0
+                        ? -log(spectralTransmission) / transmissionDepth : 0.0;
+                    float spectralScatter = max(reconstructRgb(
+                        material.transmissionScatter.rgb, wavelength), 0.0);
+                    mediumScattering = transmissionDepth > 0.0
+                        ? spectralScatter / transmissionDepth : spectralScatter;
+                    mediumAnisotropy = material.transmissionMedium.y;
+                    insideMedium = true;
+                } else {
+                    insideMedium = false;
+                    mediumAbsorption = 0.0;
+                    mediumScattering = 0.0;
+                }
+            }
             rayOrigin = hit + rayDirection * 0.002;
             environmentOnMiss = true;
             continue;
@@ -681,6 +938,7 @@ void main()
             throughput *= coat * ggxSampleWeight(
                 incident, rayDirection, normal, coatRoughness, coatF0) /
                 coatProbability;
+            environmentOnMiss = coatRoughness < 0.2;
         } else {
             throughput *= (vec3(1.0) - coatContribution) /
                 max(1.0 - coatProbability, 1e-4);
@@ -701,9 +959,30 @@ void main()
                 throughput *= ggxSampleWeight(
                     incident, rayDirection, normal, roughness, f0) /
                     specularProbability;
+                environmentOnMiss = roughness < 0.2;
             } else {
                 throughput *= diffuseContribution /
                     max(1.0 - specularProbability, 1e-4);
+                if (subsurface > 0.0 && randomFloat(rng) < subsurface) {
+                    float radius = max(reconstructRgb(
+                        subsurfaceRadiusRgb, wavelength) *
+                        max(material.subsurfaceWeightScale.y, 0.0), 0.001);
+                    float albedo = reflectanceSpectrum(
+                        subsurfaceColorRgb, wavelength);
+                    vec3 exitOrigin;
+                    vec3 exitDirection;
+                    float attenuation;
+                    if (randomWalkSubsurface(
+                        hit, orientedGeometricNormal, radius, albedo,
+                        material.subsurfaceWeightScale.z, rng,
+                        exitOrigin, exitDirection, attenuation)) {
+                        throughput *= attenuation;
+                        rayOrigin = exitOrigin;
+                        rayDirection = exitDirection;
+                        environmentOnMiss = true;
+                        continue;
+                    }
+                }
                 rayDirection = cosineHemisphere(normal, rng);
             }
         }
@@ -714,7 +993,9 @@ void main()
         }
     }
 
-    batchRadiance += radiance;
+    spectralSampleRadiance += spectralSensor(wavelength) * radiance.r;
+    }
+    batchRadiance += spectralSampleRadiance / 3.0;
     }
     vec3 previous = pixels[index].rgb;
     float previousWeight = float(camera.frame.z);
@@ -748,6 +1029,8 @@ struct GpuMaterial {
     std::array<float, 4> specularWeightColor;
     std::array<float, 4> coatWeightRoughnessIor;
     std::array<float, 4> coatColor;
+    std::array<float, 4> transmissionMedium;
+    std::array<float, 4> transmissionScatter;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
@@ -1199,8 +1482,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v8";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v4";
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v8";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v5";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -1365,6 +1648,8 @@ public:
                 {1.0F, 1.0F, 1.0F, 1.0F},
                 {0.0F, 0.1F, 1.5F, 0.0F},
                 {1.0F, 1.0F, 1.0F, 0.0F},
+                {0.0F, 0.0F, 0.0F, 20.0F},
+                {0.0F, 0.0F, 0.0F, 0.0F},
                 {kMissingTexture, kMissingTexture,
                  kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
@@ -1391,7 +1676,8 @@ public:
                  material.indexOfRefraction, material.emissionWeight},
                 {material.transmissionColor[0], material.transmissionColor[1],
                  material.transmissionColor[2], material.thinWalled ? 1.0F : 0.0F},
-                {material.subsurface, material.subsurfaceScale, 0.0F, 0.0F},
+                {material.subsurface, material.subsurfaceScale,
+                 material.subsurfaceScatterAnisotropy, 0.0F},
                 {material.subsurfaceColor[0], material.subsurfaceColor[1],
                  material.subsurfaceColor[2], 0.0F},
                 {material.subsurfaceRadius[0], material.subsurfaceRadius[1],
@@ -1402,6 +1688,12 @@ public:
                  material.coatIndexOfRefraction, 0.0F},
                 {material.coatColor[0], material.coatColor[1],
                  material.coatColor[2], 0.0F},
+                {material.transmissionDepth,
+                 material.transmissionScatterAnisotropy,
+                 material.transmissionDispersionScale,
+                 material.transmissionDispersionAbbeNumber},
+                {material.transmissionScatter[0], material.transmissionScatter[1],
+                 material.transmissionScatter[2], 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),

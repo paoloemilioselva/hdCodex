@@ -83,7 +83,7 @@ bool HdCodexRenderPass::IsConverged() const
 void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                                  const TfTokenVector& /*renderTags*/)
 {
-    constexpr unsigned int targetSamples = 64;
+    constexpr unsigned int targetSamples = 32;
     const auto revision = _scene->PublishedRevision();
     const hdcodex::PathTracerCamera camera = MakeCamera(renderPassState);
     HdCodexRenderBuffer* colorBuffer = nullptr;
@@ -152,7 +152,7 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
                 samplesPerDispatch, targetSamples - _sampleIndex);
             colorBuffer->WriteFloat4(
                 _pathTracer->Render(camera, width, height, _sampleIndex,
-                                    5U, sampleCount));
+                                    8U, sampleCount));
             _sampleIndex += sampleCount;
         } catch (const std::exception& error) {
             TF_WARN("hdCodex Vulkan path trace failed: %s", error.what());
