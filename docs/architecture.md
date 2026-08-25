@@ -84,8 +84,8 @@ azimuth. This keeps `usdrecord --disableCameraLight` useful for unlit assets
 without mixing fallback illumination into authored-light scenes. The Y-up or
 Z-up fallback axis is inferred once from the initial camera; the sky and sun
 then remain fixed in world space as the camera moves. The renderer
-evaluates eight progressive samples per Vulkan dispatch and converges at 32
-spatial samples. Each spatial path is evaluated as a correlated three-wavelength
+evaluates eight progressive samples per Vulkan dispatch and converges at 128
+spatial samples by default. Each spatial path is evaluated as a correlated three-wavelength
 packet with deterministic spectral stratification.
 Scene or camera changes reset accumulation. Geometry is flattened into one
 world-space BLAS for this first functional path; per-mesh BLAS caching and TLAS

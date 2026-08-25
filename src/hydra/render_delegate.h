@@ -48,6 +48,7 @@ public:
     void DestroyBprim(HdBprim* bprim) override;
     void CommitResources(HdChangeTracker* tracker) override;
     HdAovDescriptor GetDefaultAovDescriptor(const TfToken& name) const override;
+    HdRenderSettingDescriptorList GetRenderSettingDescriptors() const override;
 
 private:
     void Initialize(const HdRenderSettingsMap& settingsMap);

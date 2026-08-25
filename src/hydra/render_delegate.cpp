@@ -19,6 +19,9 @@
 #include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/tokens.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 PXR_NAMESPACE_OPEN_SCOPE
 namespace {
 
@@ -31,6 +34,16 @@ const TfTokenVector SupportedSprims = {
     HdPrimTypeTokens->extComputation,
 };
 const TfTokenVector SupportedBprims = {HdPrimTypeTokens->renderBuffer};
+
+int EnvironmentInteger(const char* name, int fallback, int minimum, int maximum)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (!end || *end != '\0') return fallback;
+    return std::clamp(static_cast<int>(parsed), minimum, maximum);
+}
 
 } // namespace
 
@@ -45,6 +58,15 @@ HdCodexRenderDelegate::~HdCodexRenderDelegate() = default;
 
 void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 {
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("samplesPerPixel"), VtValue(EnvironmentInteger(
+            "HDCODEX_SAMPLES_PER_PIXEL", 128, 1, 4096)));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("maxBounces"), VtValue(EnvironmentInteger(
+            "HDCODEX_MAX_BOUNCES", 8, 1, 12)));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("samplesPerUpdate"), VtValue(EnvironmentInteger(
+            "HDCODEX_SAMPLES_PER_UPDATE", 8, 1, 64)));
 #if defined(HDCODEX_HAS_VULKAN)
     _vulkan = std::make_unique<hdcodex::VulkanContext>();
 #endif
@@ -76,7 +98,7 @@ HdRenderPassSharedPtr HdCodexRenderDelegate::CreateRenderPass(
     HdRenderIndex* index, const HdRprimCollection& collection)
 {
     return std::make_shared<HdCodexRenderPass>(
-        index, collection, &_scene,
+        index, collection, this, &_scene,
 #if defined(HDCODEX_HAS_VULKAN)
         _pathTracer.get()
 #else
@@ -164,6 +186,16 @@ HdAovDescriptor HdCodexRenderDelegate::GetDefaultAovDescriptor(const TfToken& na
         return {HdFormatFloat32, false, VtValue(1.0F)};
     }
     return {};
+}
+
+HdRenderSettingDescriptorList
+HdCodexRenderDelegate::GetRenderSettingDescriptors() const
+{
+    return {
+        {"Samples per Pixel", TfToken("samplesPerPixel"), VtValue(128)},
+        {"Maximum Bounces", TfToken("maxBounces"), VtValue(8)},
+        {"Samples per Update", TfToken("samplesPerUpdate"), VtValue(8)},
+    };
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

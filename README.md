@@ -88,10 +88,13 @@ asset-input and display-output format, not the path-throughput representation.
   full resolution when motion stops.
 - Eight progressive samples are evaluated per compute dispatch, removing most
   command submissions, fence waits, and full-image GPU readbacks.
+- Production rendering defaults to 128 spatial samples, exposed as 16 visible
+  eight-sample refinement updates. Hydra clients can change `samplesPerPixel`,
+  `maxBounces`, and `samplesPerUpdate` without rebuilding the delegate.
 - Static scene and accumulation data use device-local buffers; staging resources,
   command buffers, fences, descriptor sets, and shader-cache entries are reused.
 - The checked-in 512 px Gold shader-ball benchmark dropped from 16.61 s to about
-  5 s on the development machine before the final gallery refresh.
+  6.6 s at the cleaner 128-sample default.
 
 ## Current architecture and limits
 
@@ -141,6 +144,20 @@ All USD-facing scripts call `setup_usd_env.bat`, including Python `pxr` tools.
 The scripts do not use Houdini libraries. `render_codex.bat` accepts normal
 `usdrecord` arguments and always selects the Codex delegate with camera-lighting
 disabled so authored or fallback lighting is tested.
+
+For command-line tools that do not expose Hydra settings directly, set the
+equivalent environment variables before launching the render:
+
+```bat
+set HDCODEX_SAMPLES_PER_PIXEL=512
+set HDCODEX_SAMPLES_PER_UPDATE=8
+set HDCODEX_MAX_BOUNCES=10
+render_codex.bat --imageWidth 1024 scene.usda output.exr
+```
+
+Valid sample targets are 1–4096, update batches are 1–64, and path depth is
+1–12. Larger sample targets continue refining the same estimator; they do not
+change materials, lighting, or spectral reconstruction.
 
 ## Regression gallery
 

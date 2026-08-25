@@ -3,6 +3,7 @@
 #include "render_buffer.h"
 
 #include "pxr/imaging/hd/renderPassState.h"
+#include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/vec3d.h"
@@ -67,9 +68,11 @@ std::vector<float> UpscaleNearest(
 
 HdCodexRenderPass::HdCodexRenderPass(HdRenderIndex* index,
                                      const HdRprimCollection& collection,
+                                     HdRenderDelegate* renderDelegate,
                                      hdcodex::VersionedScene* scene,
                                      hdcodex::VulkanPathTracer* pathTracer)
-    : HdRenderPass(index, collection), _scene(scene), _pathTracer(pathTracer)
+    : HdRenderPass(index, collection), _renderDelegate(renderDelegate),
+      _scene(scene), _pathTracer(pathTracer)
 {
 }
 
@@ -83,7 +86,25 @@ bool HdCodexRenderPass::IsConverged() const
 void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                                  const TfTokenVector& /*renderTags*/)
 {
-    constexpr unsigned int targetSamples = 32;
+    const unsigned int settingsVersion = _renderDelegate
+        ? _renderDelegate->GetRenderSettingsVersion() : 0U;
+    const unsigned int targetSamples = static_cast<unsigned int>(std::clamp(
+        _renderDelegate
+            ? _renderDelegate->GetRenderSetting<int>(
+                TfToken("samplesPerPixel"), 128)
+            : 128,
+        1, 4096));
+    const unsigned int productionBounces = static_cast<unsigned int>(std::clamp(
+        _renderDelegate
+            ? _renderDelegate->GetRenderSetting<int>(TfToken("maxBounces"), 8)
+            : 8,
+        1, 12));
+    const unsigned int samplesPerUpdate = static_cast<unsigned int>(std::clamp(
+        _renderDelegate
+            ? _renderDelegate->GetRenderSetting<int>(
+                TfToken("samplesPerUpdate"), 8)
+            : 8,
+        1, 64));
     const auto revision = _scene->PublishedRevision();
     const hdcodex::PathTracerCamera camera = MakeCamera(renderPassState);
     HdCodexRenderBuffer* colorBuffer = nullptr;
@@ -115,6 +136,7 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
     const unsigned int height = colorBuffer->GetHeight();
     const bool cameraChanged = _hasCamera && !(camera == _lastCamera);
     const bool reset = _lastRevision != revision || !_hasCamera ||
+        _lastSettingsVersion != settingsVersion ||
         cameraChanged || width != _lastWidth || height != _lastHeight;
     if (reset) {
         try {
@@ -147,12 +169,11 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
     } else if (_pathTracer->HasGeometry() && width > 0 && height > 0 &&
                _sampleIndex < targetSamples) {
         try {
-            constexpr unsigned int samplesPerDispatch = 8U;
             const unsigned int sampleCount = std::min(
-                samplesPerDispatch, targetSamples - _sampleIndex);
+                samplesPerUpdate, targetSamples - _sampleIndex);
             colorBuffer->WriteFloat4(
                 _pathTracer->Render(camera, width, height, _sampleIndex,
-                                    8U, sampleCount));
+                                    productionBounces, sampleCount));
             _sampleIndex += sampleCount;
         } catch (const std::exception& error) {
             TF_WARN("hdCodex Vulkan path trace failed: %s", error.what());
@@ -175,6 +196,7 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
     _lastHeight = height;
     _hasCamera = true;
     _lastRevision = revision;
+    _lastSettingsVersion = settingsVersion;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

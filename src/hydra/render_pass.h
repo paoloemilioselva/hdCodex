@@ -12,6 +12,7 @@ class HDCODEX_API HdCodexRenderPass final : public HdRenderPass {
 public:
     HdCodexRenderPass(HdRenderIndex* index,
                       const HdRprimCollection& collection,
+                      HdRenderDelegate* renderDelegate,
                       hdcodex::VersionedScene* scene,
                       hdcodex::VulkanPathTracer* pathTracer);
     ~HdCodexRenderPass() override;
@@ -23,6 +24,7 @@ protected:
                   const TfTokenVector& renderTags) override;
 
 private:
+    HdRenderDelegate* _renderDelegate;
     hdcodex::VersionedScene* _scene;
     hdcodex::VulkanPathTracer* _pathTracer;
     hdcodex::VersionedScene::Revision _lastRevision{~hdcodex::VersionedScene::Revision{0}};
@@ -30,6 +32,7 @@ private:
     unsigned int _lastWidth{0};
     unsigned int _lastHeight{0};
     unsigned int _sampleIndex{0};
+    unsigned int _lastSettingsVersion{~0U};
     bool _hasCamera{false};
     bool _converged{false};
 };
