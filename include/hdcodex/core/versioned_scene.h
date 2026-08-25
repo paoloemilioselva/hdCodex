@@ -22,6 +22,9 @@ struct SceneMesh {
     /// the geometric face-normal fallback in the path tracer.
     std::vector<float> normals;
     std::string materialId;
+    /// Linear Hydra display color used by the default material when this mesh
+    /// has no authored material binding.
+    std::array<float, 3> displayColor{0.5F, 0.5F, 0.5F};
 };
 
 struct SceneMaterial {

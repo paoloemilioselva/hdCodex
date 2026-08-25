@@ -20,7 +20,9 @@ namespace {
 constexpr std::uint32_t kMaxMaterialTextures = 256U;
 constexpr std::uint32_t kMissingTexture = UINT32_MAX;
 constexpr std::uint32_t kMaxPathBounces = 5U;
+constexpr std::uint32_t kMaxLights = 64U;
 constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
+constexpr std::uint32_t kLightCountShift = 16U;
 
 constexpr auto kPathTracerSource = R"glsl(
 #version 460
@@ -54,6 +56,22 @@ layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial mat
 layout(std430, set = 0, binding = 7) readonly buffer TextureCoordinates { vec2 texcoords[]; };
 layout(set = 0, binding = 8) uniform sampler2D materialTextures[256];
 layout(std430, set = 0, binding = 9) readonly buffer ShadingNormals { vec4 shadingNormals[]; };
+struct GpuLight {
+    vec4 colorIntensity;
+    vec4 controls;
+    vec4 position;
+    vec4 axisU;
+    vec4 axisV;
+    vec4 basisX;
+    vec4 basisY;
+    vec4 basisZ;
+    vec4 shaping;
+    vec4 focusTint;
+    vec4 shadow;
+    vec4 shadowColor;
+    uvec4 textureInfo;
+};
+layout(std430, set = 0, binding = 10) readonly buffer Lights { GpuLight lights[]; };
 layout(std140, set = 0, binding = 4) uniform CameraBlock
 {
     vec4 origin;
@@ -171,10 +189,87 @@ vec3 ggxSampleWeight(vec3 incident, vec3 outgoing, vec3 normal,
            max(nDotV * nDotH, 1e-5);
 }
 
+vec2 directionToVerticalCross(vec3 direction)
+{
+    vec3 absoluteDirection = abs(direction);
+    vec2 faceUv;
+    vec2 tile;
+    if (absoluteDirection.x >= absoluteDirection.y &&
+        absoluteDirection.x >= absoluteDirection.z) {
+        if (direction.x >= 0.0) {
+            faceUv = vec2(-direction.z, direction.y) / absoluteDirection.x;
+            tile = vec2(2.0, 1.0);
+        } else {
+            faceUv = vec2(direction.z, direction.y) / absoluteDirection.x;
+            tile = vec2(0.0, 1.0);
+        }
+    } else if (absoluteDirection.y >= absoluteDirection.z) {
+        if (direction.y >= 0.0) {
+            faceUv = vec2(direction.x, -direction.z) / absoluteDirection.y;
+            tile = vec2(1.0, 0.0);
+        } else {
+            faceUv = vec2(direction.x, direction.z) / absoluteDirection.y;
+            tile = vec2(1.0, 2.0);
+        }
+    } else if (direction.z >= 0.0) {
+        faceUv = vec2(direction.x, direction.y) / absoluteDirection.z;
+        tile = vec2(1.0, 1.0);
+    } else {
+        faceUv = vec2(-direction.x, direction.y) / absoluteDirection.z;
+        tile = vec2(1.0, 3.0);
+    }
+    return (tile + faceUv * 0.5 + 0.5) / vec2(3.0, 4.0);
+}
+
+vec2 domeTextureCoordinates(vec3 direction, uint format)
+{
+    const float pi = 3.14159265359;
+    if (format == 2u) {
+        float denominator = 2.0 * sqrt(max(direction.x * direction.x +
+            direction.y * direction.y + (direction.z + 1.0) *
+            (direction.z + 1.0), 1e-8));
+        return vec2(direction.x / denominator + 0.5,
+                    direction.y / denominator + 0.5);
+    }
+    if (format == 3u) {
+        float radius = acos(clamp(-direction.z, -1.0, 1.0)) / pi;
+        vec2 radial = length(direction.xy) > 1e-6
+            ? normalize(direction.xy) : vec2(0.0);
+        return vec2(0.5) + radial * (0.5 * radius);
+    }
+    if (format == 4u) return directionToVerticalCross(direction);
+    return vec2(fract(atan(direction.x, -direction.z) /
+                      (2.0 * pi) + 1.0),
+                1.0 - acos(clamp(direction.y, -1.0, 1.0)) / pi);
+}
+
+vec3 sampleDome(GpuLight light, vec3 worldDirection)
+{
+    vec3 localDirection = normalize(vec3(
+        dot(worldDirection, light.basisX.xyz),
+        dot(worldDirection, light.basisY.xyz),
+        dot(worldDirection, light.basisZ.xyz)));
+    vec3 textureValue = light.textureInfo.x == 0xffffffffu ? vec3(1.0) :
+        texture(materialTextures[nonuniformEXT(light.textureInfo.x)],
+                domeTextureCoordinates(localDirection, light.textureInfo.y)).rgb;
+    return light.colorIntensity.rgb * light.colorIntensity.a * textureValue;
+}
+
 vec3 environment(vec3 direction)
 {
-    float t = 0.5 * (direction.y + 1.0);
-    return mix(vec3(0.035, 0.045, 0.065), vec3(0.38, 0.55, 0.85), t);
+    vec3 result = vec3(0.0);
+    uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+    if (lightCount == 0u) {
+        float t = 0.5 * (direction.y + 1.0);
+        return mix(vec3(0.035, 0.045, 0.065),
+                   vec3(0.38, 0.55, 0.85), t);
+    }
+    for (uint index = 0u; index < lightCount; ++index) {
+        if (lights[index].textureInfo.z == 0u) {
+            result += sampleDome(lights[index], direction);
+        }
+    }
+    return result;
 }
 
 vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
@@ -234,14 +329,19 @@ vec3 surfaceShadingNormal(uint primitive, vec2 barycentrics, vec3 geometricNorma
     return dot(result, geometricNormal) < 0.0 ? -result : result;
 }
 
-bool occluded(vec3 origin, vec3 direction)
+vec3 shadowVisibility(vec3 origin, vec3 direction, float maximumDistance,
+                      GpuLight light)
 {
+    if (light.shadow.x < 0.5) return vec3(1.0);
+    float traceDistance = maximumDistance;
+    if (light.shadow.y >= 0.0) traceDistance = min(traceDistance, light.shadow.y);
+    if (traceDistance <= 0.001) return vec3(1.0);
     rayQueryEXT shadow;
     uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT;
     if ((camera.frame.w & 0x100u) != 0u) rayFlags |= gl_RayFlagsOpaqueEXT;
     rayQueryInitializeEXT(shadow, scene,
         rayFlags,
-        0xff, origin, 0.001, direction, 10000.0);
+        0xff, origin, 0.001, direction, traceDistance);
     while (rayQueryProceedEXT(shadow)) {
         if (rayQueryGetIntersectionTypeEXT(shadow, false) ==
             gl_RayQueryCandidateIntersectionTriangleEXT) {
@@ -252,8 +352,67 @@ bool occluded(vec3 origin, vec3 direction)
             }
         }
     }
-    return rayQueryGetIntersectionTypeEXT(shadow, true) !=
-        gl_RayQueryCommittedIntersectionNoneEXT;
+    if (rayQueryGetIntersectionTypeEXT(shadow, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) return vec3(1.0);
+    float strength = 1.0;
+    float hitDistance = rayQueryGetIntersectionTEXT(shadow, true);
+    if (light.shadow.y >= 0.0 && light.shadow.z > 0.0) {
+        float falloff = min(light.shadow.z, max(light.shadow.y, 0.0));
+        strength = clamp((light.shadow.y - hitDistance) /
+                         max(falloff, 1e-6), 0.0, 1.0);
+        strength = pow(strength, max(light.shadow.w, 0.0));
+    }
+    return mix(vec3(1.0), light.shadowColor.rgb, strength);
+}
+
+vec3 evaluateDirectSurface(
+    vec3 normal, vec3 viewDirection, vec3 lightDirection,
+    vec3 diffuseColor, float transmission, float subsurface,
+    float metalness, float roughness, vec3 f0,
+    float coat, float coatRoughness, vec3 coatF0,
+    float diffuseScale, float specularScale)
+{
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float wrappedNdotL = max((dot(normal, lightDirection) + 0.5 * subsurface) /
+                             (1.0 + 0.5 * subsurface), 0.0);
+    if (wrappedNdotL <= 0.0 && nDotL <= 0.0) return vec3(0.0);
+    vec3 halfway = normalize(viewDirection + lightDirection);
+    vec3 baseFresnel = fresnelSchlick(
+        max(dot(viewDirection, halfway), 0.0), f0);
+    vec3 diffuse = diffuseScale * (vec3(1.0) - baseFresnel) *
+        (1.0 - metalness) * diffuseColor *
+        (wrappedNdotL / 3.14159265359) * (1.0 - transmission);
+    vec3 specular = specularScale * nDotL * evaluateGGX(
+        normal, viewDirection, lightDirection, roughness, f0);
+    vec3 coatFresnel = vec3(0.0);
+    vec3 coatSpecular = vec3(0.0);
+    if (coat > 0.0) {
+        coatFresnel = fresnelSchlick(
+            max(dot(viewDirection, halfway), 0.0), coatF0);
+        coatSpecular = specularScale * coat * nDotL * evaluateGGX(
+            normal, viewDirection, lightDirection, coatRoughness, coatF0);
+    }
+    return (vec3(1.0) - coat * coatFresnel) *
+        (diffuse + specular) + coatSpecular;
+}
+
+vec3 uniformSphere(inout uint state)
+{
+    float y = 1.0 - 2.0 * randomFloat(state);
+    float radius = sqrt(max(1.0 - y * y, 0.0));
+    float phi = 6.28318530718 * randomFloat(state);
+    return vec3(radius * cos(phi), y, radius * sin(phi));
+}
+
+float shapingConeFactor(GpuLight light, float cosine)
+{
+    float angle = acos(clamp(cosine, -1.0, 1.0));
+    float outer = radians(clamp(light.shaping.y, 0.0, 180.0));
+    float inner = outer * (1.0 - clamp(light.shaping.z, 0.0, 1.0));
+    float cone = outer >= 3.1415925 ? 1.0 :
+        (outer <= inner + 1e-6 ? (angle <= outer ? 1.0 : 0.0) :
+         1.0 - smoothstep(inner, outer, angle));
+    return cone;
 }
 )glsl"
 R"glsl(
@@ -271,6 +430,7 @@ void main()
         uv.x * camera.horizontal.xyz + uv.y * camera.vertical.xyz - rayOrigin);
     vec3 throughput = vec3(1.0);
     vec3 radiance = vec3(0.0);
+    bool environmentOnMiss = true;
 
     int maxBounces = int(clamp(camera.frame.w & 0xffu, 1u, 5u));
     for (int bounce = 0; bounce < maxBounces; ++bounce)
@@ -295,7 +455,9 @@ void main()
         if (rayQueryGetIntersectionTypeEXT(query, true) ==
             gl_RayQueryCommittedIntersectionNoneEXT)
         {
-            radiance += throughput * environment(rayDirection);
+            if (environmentOnMiss) {
+                radiance += throughput * environment(rayDirection);
+            }
             break;
         }
 
@@ -401,33 +563,77 @@ void main()
             }
         }
 
-        vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
         vec3 viewDirection = normalize(-rayDirection);
-        float nDotL = max(dot(normal, sunDirection), 0.0);
-        float wrappedNdotL = max((dot(normal, sunDirection) + 0.5 * subsurface) /
-                                 (1.0 + 0.5 * subsurface), 0.0);
-        if ((wrappedNdotL > 0.0 || nDotL > 0.0) &&
-            !occluded(hit + orientedGeometricNormal * 0.002, sunDirection)) {
-            vec3 halfway = normalize(viewDirection + sunDirection);
-            vec3 baseFresnel = fresnelSchlick(
-                max(dot(viewDirection, halfway), 0.0), f0);
-            vec3 diffuse = (vec3(1.0) - baseFresnel) * (1.0 - metalness) *
-                diffuseColor * (wrappedNdotL / 3.14159265359) *
-                (1.0 - transmission);
-            vec3 specular = nDotL * evaluateGGX(
-                normal, viewDirection, sunDirection, roughness, f0);
-            vec3 coatFresnel = vec3(0.0);
-            vec3 coatSpecular = vec3(0.0);
-            if (coat > 0.0) {
-                coatFresnel = fresnelSchlick(
-                    max(dot(viewDirection, halfway), 0.0), coatF0);
-                coatSpecular = coat * nDotL * evaluateGGX(
-                    normal, viewDirection, sunDirection, coatRoughness, coatF0);
+        uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+        if (lightCount > 0u) {
+            uint lightIndex = min(uint(randomFloat(rng) * float(lightCount)),
+                                  lightCount - 1u);
+            GpuLight light = lights[lightIndex];
+            vec3 lightDirection = vec3(0.0, 1.0, 0.0);
+            vec3 lightRadiance = vec3(0.0);
+            float inversePdf = 0.0;
+            float maximumShadowDistance = 10000.0;
+            if (light.textureInfo.z == 0u) {
+                lightDirection = uniformSphere(rng);
+                lightRadiance = sampleDome(light, lightDirection);
+                inversePdf = 12.5663706144;
+            } else {
+                vec2 lightUv = vec2(randomFloat(rng), randomFloat(rng));
+                vec3 lightPosition = light.position.xyz +
+                    (lightUv.x - 0.5) * light.axisU.xyz +
+                    (lightUv.y - 0.5) * light.axisV.xyz;
+                vec3 toLight = lightPosition - hit;
+                float distanceSquared = dot(toLight, toLight);
+                float lightDistance = sqrt(max(distanceSquared, 1e-8));
+                lightDirection = toLight / lightDistance;
+                float emissionCosine = max(dot(
+                    normalize(light.basisZ.xyz), lightDirection), 0.0);
+                if (emissionCosine > 0.0 && light.controls.w > 0.0) {
+                    float focus = pow(emissionCosine,
+                                      max(light.shaping.x, 0.0));
+                    vec3 focusColor = mix(light.focusTint.rgb, vec3(1.0), focus);
+                    vec3 textureValue = light.textureInfo.x == 0xffffffffu
+                        ? vec3(1.0)
+                        : texture(materialTextures[
+                            nonuniformEXT(light.textureInfo.x)], lightUv).rgb;
+                    lightRadiance = light.colorIntensity.rgb *
+                        light.colorIntensity.a * textureValue * focusColor *
+                        shapingConeFactor(light, emissionCosine);
+                    inversePdf = light.controls.w * emissionCosine /
+                        max(distanceSquared, 1e-8);
+                    maximumShadowDistance = max(lightDistance - 0.003, 0.001);
+                }
             }
-            vec3 direct = (vec3(1.0) - coat * coatFresnel) *
-                (diffuse + specular) + coatSpecular;
-            const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
-            radiance += throughput * direct * sunRadiance;
+            if (inversePdf > 0.0) {
+                vec3 direct = evaluateDirectSurface(
+                    normal, viewDirection, lightDirection, diffuseColor,
+                    transmission, subsurface, metalness, roughness, f0,
+                    coat, coatRoughness, coatF0,
+                    light.controls.x, light.controls.y);
+                if (any(greaterThan(direct, vec3(0.0)))) {
+                    vec3 visibility = shadowVisibility(
+                        hit + orientedGeometricNormal * 0.002,
+                        lightDirection, maximumShadowDistance, light);
+                    radiance += throughput * direct * lightRadiance *
+                        visibility * inversePdf * float(lightCount);
+                }
+            }
+        } else {
+            // Default to an oblique 75-degree sun when usdrecord's camera
+            // light is disabled and the stage authors no lights of its own.
+            const vec3 sunDirection = vec3(
+                0.1830127, 0.9659258, 0.1830127);
+            vec3 direct = evaluateDirectSurface(
+                normal, viewDirection, sunDirection, diffuseColor,
+                transmission, subsurface, metalness, roughness, f0,
+                coat, coatRoughness, coatF0, 1.0, 1.0);
+            if (any(greaterThan(direct, vec3(0.0)))) {
+                vec3 visibility = shadowVisibility(
+                    hit + orientedGeometricNormal * 0.002,
+                    sunDirection, 10000.0, lights[0]);
+                const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
+                radiance += throughput * direct * sunRadiance * visibility;
+            }
         }
 
         if (randomFloat(rng) < transmission) {
@@ -446,9 +652,11 @@ void main()
             }
             throughput *= transmissionColor;
             rayOrigin = hit + rayDirection * 0.002;
+            environmentOnMiss = true;
             continue;
         }
 
+        environmentOnMiss = false;
         rayOrigin = hit + orientedGeometricNormal * 0.002;
         vec3 coatContribution = coat > 0.0
             ? coat * fresnelSchlick(max(dot(normal, viewDirection), 0.0), coatF0)
@@ -530,6 +738,24 @@ struct GpuMaterial {
     std::array<std::uint32_t, 4> textureIndices3;
     std::array<std::uint32_t, 4> textureIndices4;
 };
+
+struct GpuLight {
+    std::array<float, 4> colorIntensity;
+    std::array<float, 4> controls;
+    std::array<float, 4> position;
+    std::array<float, 4> axisU;
+    std::array<float, 4> axisV;
+    std::array<float, 4> basisX;
+    std::array<float, 4> basisY;
+    std::array<float, 4> basisZ;
+    std::array<float, 4> shaping;
+    std::array<float, 4> focusTint;
+    std::array<float, 4> shadow;
+    std::array<float, 4> shadowColor;
+    std::array<std::uint32_t, 4> textureInfo;
+};
+
+static_assert(sizeof(GpuLight) == 13U * 16U);
 
 struct GpuTexcoord { float u, v; };
 
@@ -911,8 +1137,10 @@ public:
                 kMaxMaterialTextures, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         };
-        std::array<VkDescriptorBindingFlags, 10> bindingFlags{};
+        std::array<VkDescriptorBindingFlags, 11> bindingFlags{};
         bindingFlags[8] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
         const VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -929,7 +1157,7 @@ public:
               "vkCreateDescriptorSetLayout");
         const std::array poolSizes = {
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                  kMaxMaterialTextures},
@@ -955,8 +1183,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v6";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v3";
+        options.generatorVersion = "hdCodex.pathtracer.v7";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v4";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -1013,8 +1241,10 @@ public:
         DestroyBuffer(materialBuffer);
         DestroyBuffer(texcoordBuffer);
         DestroyBuffer(normalBuffer);
+        DestroyBuffer(lightBuffer);
         for (Texture& texture : textures) DestroyTexture(texture);
         textures.clear();
+        lightCount = 0U;
         geometryReady = false;
     }
 
@@ -1053,6 +1283,7 @@ public:
         std::vector<GpuTexcoord> texcoords;
         std::vector<GpuNormal> normals;
         std::vector<GpuMaterial> materials;
+        std::vector<GpuLight> lights;
         std::map<std::string, std::uint32_t, std::less<>> textureIndices;
         const std::size_t textureCount = std::min<std::size_t>(
             snapshot->textures.size(), kMaxMaterialTextures);
@@ -1067,23 +1298,70 @@ public:
             return found == textureIndices.end() ? kMissingTexture : found->second;
         };
 
-        materials.push_back({
-            {0.8F, 0.8F, 0.8F, 0.0F},
-            {0.0F, 0.0F, 0.0F, 0.5F},
-            {0.0F, 1.0F, 1.5F, 0.0F},
-            {1.0F, 1.0F, 1.0F, 0.0F},
-            {0.0F, 1.0F, 0.0F, 0.0F},
-            {0.8F, 0.8F, 0.8F, 0.0F},
-            {1.0F, 0.2F, 0.1F, 0.0F},
-            {1.0F, 1.0F, 1.0F, 1.0F},
-            {0.0F, 0.1F, 1.5F, 0.0F},
-            {1.0F, 1.0F, 1.0F, 0.0F},
-            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
-            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
-            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
-            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
-            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
-        });
+        lights.reserve(std::min<std::size_t>(snapshot->lights.size(), kMaxLights));
+        for (const SceneLight& light : snapshot->lights) {
+            if (!light.visible || lights.size() >= kMaxLights) continue;
+            float radianceScale = light.intensity * std::exp2(light.exposure);
+            if (light.type == SceneLightType::Rect && light.normalize) {
+                radianceScale /= std::max(light.area, 1e-8F);
+            }
+            lights.push_back({
+                {light.color[0] * light.temperatureColor[0],
+                 light.color[1] * light.temperatureColor[1],
+                 light.color[2] * light.temperatureColor[2], radianceScale},
+                {light.diffuse, light.specular,
+                 light.type == SceneLightType::Rect ? 1.0F : 0.0F,
+                 std::max(light.area, 0.0F)},
+                {light.position[0], light.position[1], light.position[2], 0.0F},
+                {light.axisU[0], light.axisU[1], light.axisU[2], 0.0F},
+                {light.axisV[0], light.axisV[1], light.axisV[2], 0.0F},
+                {light.basisX[0], light.basisX[1], light.basisX[2], 0.0F},
+                {light.basisY[0], light.basisY[1], light.basisY[2], 0.0F},
+                {light.basisZ[0], light.basisZ[1], light.basisZ[2], 0.0F},
+                {light.shapingFocus, light.shapingConeAngle,
+                 light.shapingConeSoftness, 0.0F},
+                {light.shapingFocusTint[0], light.shapingFocusTint[1],
+                 light.shapingFocusTint[2], 0.0F},
+                {light.shadowEnable ? 1.0F : 0.0F, light.shadowDistance,
+                 light.shadowFalloff, light.shadowFalloffGamma},
+                {light.shadowColor[0], light.shadowColor[1],
+                 light.shadowColor[2], 0.0F},
+                {textureIndex(light.texture),
+                 static_cast<std::uint32_t>(light.textureFormat),
+                 static_cast<std::uint32_t>(light.type), 0U},
+            });
+        }
+        lightCount = static_cast<std::uint32_t>(lights.size());
+        if (lights.empty()) {
+            lights.emplace_back();
+            lights.back().shadow = {1.0F, -1.0F, -1.0F, 1.0F};
+        }
+
+        const auto defaultMaterial = [](const std::array<float, 3>& color) {
+            return GpuMaterial{
+                {color[0], color[1], color[2], 0.0F},
+                {0.0F, 0.0F, 0.0F, 0.5F},
+                {0.0F, 1.0F, 1.5F, 0.0F},
+                {1.0F, 1.0F, 1.0F, 0.0F},
+                {0.0F, 1.0F, 0.0F, 0.0F},
+                {color[0], color[1], color[2], 0.0F},
+                {1.0F, 0.2F, 0.1F, 0.0F},
+                {1.0F, 1.0F, 1.0F, 1.0F},
+                {0.0F, 0.1F, 1.5F, 0.0F},
+                {1.0F, 1.0F, 1.0F, 0.0F},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
+            };
+        };
+        materials.push_back(defaultMaterial({0.8F, 0.8F, 0.8F}));
         std::map<std::string, std::uint32_t, std::less<>> materialIndices;
         for (const SceneMaterial& material : snapshot->materials) {
             const std::uint32_t index = static_cast<std::uint32_t>(materials.size());
@@ -1126,6 +1404,7 @@ public:
                  kMissingTexture, kMissingTexture, kMissingTexture},
             });
         }
+        std::map<std::array<float, 3>, std::uint32_t> displayColorMaterials;
         for (const SceneMesh& mesh : snapshot->meshes) {
             const std::uint32_t base = static_cast<std::uint32_t>(vertices.size());
             for (std::size_t i = 0; i + 2 < mesh.positions.size(); i += 3) {
@@ -1133,8 +1412,23 @@ public:
                                     mesh.positions[i + 2], 1.0F});
             }
             const auto foundMaterial = materialIndices.find(mesh.materialId);
-            const std::uint32_t materialIndex = foundMaterial == materialIndices.end()
+            std::uint32_t materialIndex = foundMaterial == materialIndices.end()
                 ? 0U : foundMaterial->second;
+            if (mesh.materialId.empty()) {
+                std::array<float, 3> color = mesh.displayColor;
+                for (float& component : color) {
+                    component = std::isfinite(component)
+                        ? std::clamp(component, 0.0F, 1.0F) : 0.5F;
+                }
+                const auto found = displayColorMaterials.find(color);
+                if (found != displayColorMaterials.end()) {
+                    materialIndex = found->second;
+                } else {
+                    materialIndex = static_cast<std::uint32_t>(materials.size());
+                    displayColorMaterials.emplace(color, materialIndex);
+                    materials.push_back(defaultMaterial(color));
+                }
+            }
             for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
                 const std::uint32_t i0 = mesh.indices[triangle];
                 const std::uint32_t i1 = mesh.indices[triangle + 1];
@@ -1188,6 +1482,9 @@ public:
             false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
         normalBuffer = CreateDeviceBufferWithData(normals.data(),
             normals.size() * sizeof(GpuNormal), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        lightBuffer = CreateDeviceBufferWithData(lights.data(),
+            lights.size() * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
         VkAccelerationStructureGeometryKHR geometry{
@@ -1338,7 +1635,9 @@ public:
             texcoordBuffer.handle, 0, texcoordBuffer.size};
         const VkDescriptorBufferInfo normalInfo{
             normalBuffer.handle, 0, normalBuffer.size};
-        std::array<VkWriteDescriptorSet, 10> writes{};
+        const VkDescriptorBufferInfo lightInfo{
+            lightBuffer.handle, 0, lightBuffer.size};
+        std::array<VkWriteDescriptorSet, 11> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &accelerationWrite,
             descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
         const std::array infos = {&outputInfo, &vertexInfo, &indexInfo};
@@ -1357,6 +1656,8 @@ public:
             7, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &texcoordInfo, nullptr};
         writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
             9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &normalInfo, nullptr};
+        writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &lightInfo, nullptr};
 
         std::vector<VkDescriptorImageInfo> imageInfos;
         imageInfos.reserve(textures.size());
@@ -1367,12 +1668,12 @@ public:
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             });
         }
-        std::uint32_t writeCount = 9;
+        std::uint32_t writeCount = 10;
         if (!imageInfos.empty()) {
-            writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
                 8, 0, static_cast<std::uint32_t>(imageInfos.size()),
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos.data(), nullptr, nullptr};
-            writeCount = 10;
+            writeCount = 11;
         }
         vkUpdateDescriptorSets(device, writeCount,
                                writes.data(), 0, nullptr);
@@ -1391,7 +1692,8 @@ public:
             {camera.vertical[0], camera.vertical[1], camera.vertical[2], 0.0F},
             {width, height, sample,
              std::clamp(maxBounces, 1U, kMaxPathBounces) |
-                 (sceneOpaque ? kOpaqueSceneFlag : 0U)},
+                 (sceneOpaque ? kOpaqueSceneFlag : 0U) |
+                 (std::min(lightCount, kMaxLights) << kLightCountShift)},
         };
         std::memcpy(uniform.mapped, &data, sizeof(data));
         Submit([&](VkCommandBuffer command) {
@@ -1469,6 +1771,7 @@ public:
     Buffer materialBuffer;
     Buffer texcoordBuffer;
     Buffer normalBuffer;
+    Buffer lightBuffer;
     Buffer blasStorage;
     Buffer tlasStorage;
     VkAccelerationStructureKHR blas{VK_NULL_HANDLE};
@@ -1476,6 +1779,7 @@ public:
     std::vector<Texture> textures;
     bool geometryReady{false};
     bool sceneOpaque{true};
+    std::uint32_t lightCount{0U};
 };
 
 VulkanPathTracer::VulkanPathTracer(VulkanContext& context, ShaderCache& cache)

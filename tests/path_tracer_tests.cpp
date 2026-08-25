@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 void Check(bool condition, const char* message)
@@ -55,6 +56,36 @@ try {
         .srgb = false,
         .rgba = {255, 255, 255, 255},
     });
+    scene->textures.push_back({
+        .id = "rect#hdr",
+        .sourcePath = "synthetic",
+        .width = 1,
+        .height = 1,
+        .srgb = false,
+        .rgbaFloat = {2.0F, 2.0F, 2.0F, 1.0F},
+    });
+    scene->lights.push_back({
+        .id = "/dome",
+        .type = hdcodex::SceneLightType::Dome,
+        .color = {0.08F, 0.16F, 0.8F},
+        .intensity = 0.35F,
+    });
+    scene->lights.push_back({
+        .id = "/rect",
+        .type = hdcodex::SceneLightType::Rect,
+        .color = {1.0F, 0.92F, 0.82F},
+        .intensity = 50.0F,
+        .texture = "rect#hdr",
+        .basisX = {0.817F, -0.576F, 0.0F},
+        .basisY = {0.184F, 0.261F, -0.947F},
+        .basisZ = {0.547F, 0.775F, 0.319F},
+        .position = {3.282F, 4.650F, -1.086F},
+        .axisU = {1.634F, -1.152F, 0.0F},
+        .axisV = {0.368F, 0.522F, -1.894F},
+        .width = 2.0F,
+        .height = 2.0F,
+        .area = 4.0F,
+    });
     tracer.SetScene(scene);
     Check(tracer.HasGeometry(), "path tracer did not build geometry");
 
@@ -66,6 +97,13 @@ try {
     };
     constexpr std::uint32_t width = 64;
     constexpr std::uint32_t height = 64;
+    const auto renderSamples = [&](std::uint32_t sampleCount) {
+        std::vector<float> result;
+        for (std::uint32_t sample = 0; sample < sampleCount; ++sample) {
+            result = tracer.Render(camera, width, height, sample);
+        }
+        return result;
+    };
     const auto pixels = tracer.Render(camera, width, height, 0);
     Check(pixels.size() == width * height * 4U, "path tracer returned wrong image size");
     for (float value : pixels) Check(std::isfinite(value), "path tracer returned non-finite output");
@@ -108,17 +146,17 @@ try {
     scene->materials.front().roughness = 0.08F;
     scene->materials.front().specularWeight = 1.0F;
     tracer.SetScene(scene);
-    const auto glossy = tracer.Render(camera, width, height, 0);
+    const auto glossy = renderSamples(64U);
     scene->materials.front().specularWeight = 0.0F;
     tracer.SetScene(scene);
-    const auto matteBlack = tracer.Render(camera, width, height, 0);
+    const auto matteBlack = renderSamples(64U);
     Check(glossy[center] > matteBlack[center] + 0.1F,
           "dielectric GGX specular highlight was not evaluated");
 
     scene->materials.front().coat = 1.0F;
     scene->materials.front().coatRoughness = 0.08F;
     tracer.SetScene(scene);
-    const auto coated = tracer.Render(camera, width, height, 0);
+    const auto coated = renderSamples(64U);
     Check(coated[center] > matteBlack[center] + 0.1F,
           "Standard Surface coat highlight was not evaluated");
 
@@ -150,10 +188,33 @@ try {
     scene->materials.front().transmission = 1.0F;
     scene->materials.front().transmissionColor = {1.0F, 0.05F, 0.02F};
     scene->materials.front().thinWalled = true;
+    scene->materials.front().metalness = 0.0F;
+    scene->materials.front().specularWeight = 0.0F;
     tracer.SetScene(scene);
     const auto transmitted = tracer.Render(camera, width, height, 0);
     Check(transmitted[center] > transmitted[center + 1] * 2.0F,
           "thin-walled transmission did not tint the environment");
+
+    scene->lights.clear();
+    scene->meshes.front().materialId.clear();
+    scene->meshes.front().displayColor = {0.05F, 0.8F, 0.1F};
+    scene->materials.front().baseColor = {0.8F, 0.8F, 0.8F};
+    scene->materials.front().baseColorTexture.clear();
+    scene->materials.front().roughness = 1.0F;
+    scene->materials.front().transmission = 0.0F;
+    scene->materials.front().thinWalled = false;
+    tracer.SetScene(scene);
+    const auto fallbackLighting = tracer.Render(camera, width, height, 0);
+    const float fallbackCenterLuma = fallbackLighting[center] +
+        fallbackLighting[center + 1] + fallbackLighting[center + 2];
+    const float fallbackCornerLuma = fallbackLighting[corner] +
+        fallbackLighting[corner + 1] + fallbackLighting[corner + 2];
+    Check(fallbackCenterLuma > 0.05F,
+          "default sunlight did not illuminate a lightless scene");
+    Check(fallbackLighting[center + 1] > fallbackLighting[center] * 2.0F,
+          "unbound mesh did not use its Hydra display color");
+    Check(fallbackCornerLuma > 0.05F,
+          "default sky did not illuminate a lightless scene background");
     std::error_code error;
     std::filesystem::remove_all(cacheRoot, error);
     std::cout << "Vulkan BLAS/TLAS ray-query path trace passed on "

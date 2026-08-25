@@ -302,6 +302,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     VtVec3fArray normals;
     VtIntArray normalIndices;
     HdInterpolation normalInterpolation = HdInterpolationConstant;
+    GfVec3f displayColor(0.5F);
     bool visible = true;
     SdfPath materialId;
     SdfPath instancerId;
@@ -328,6 +329,9 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 _texcoordIndices.clear();
                 _texcoordInterpolation = HdInterpolationConstant;
             }
+            const VtVec3fArray colors = ToVec3fArray(
+                sceneDelegate->Get(id, HdTokens->displayColor));
+            _displayColor = colors.empty() ? GfVec3f(0.5F) : colors.front();
             changed = true;
         }
         if ((*dirtyBits & HdChangeTracker::DirtyNormals) != 0 ||
@@ -364,6 +368,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
         normals = _normals;
         normalIndices = _normalIndices;
         normalInterpolation = _normalInterpolation;
+        displayColor = _displayColor;
         transform = _transform;
         visible = _visible;
         materialId = GetMaterialId();
@@ -422,6 +427,8 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             hdcodex::SceneMesh mesh;
             mesh.id = id.GetString();
             mesh.materialId = materialId.GetString();
+            mesh.displayColor = {
+                displayColor[0], displayColor[1], displayColor[2]};
             mesh.positions.reserve(points.size() * 3U * instanceTransforms.size());
             mesh.indices.reserve(triangles.size() * 3U * instanceTransforms.size());
             mesh.texcoords.reserve(cornerTexcoords.size() * instanceTransforms.size());

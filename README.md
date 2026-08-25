@@ -33,6 +33,20 @@ non-uniformly scaled meshes and instances before GPU interpolation. When a mesh
 does not author normals, the adapter generates smooth vertex normals from Hydra's
 public adjacency and smooth-normal utilities.
 
+UsdLux `DomeLight` and `RectLight` prims now drive GPU lighting directly. Dome
+lights support HDR textures and the standard lat-long, mirrored-ball, angular,
+and vertical-cross layouts. Rectangle lights support textured emission,
+world-space area normalization, shaping controls, diffuse/specular multipliers,
+and colored distance-limited shadows. When a stage has no supported authored
+lights, hdCodex retains a neutral analytic sky and an oblique default sun at 75°
+elevation so command-line renders remain usable with camera lighting disabled.
+
+Meshes without a material binding use their Hydra `displayColor` as a linear
+base color. These colors are deduplicated into default GPU materials with
+Lambert diffuse and a small rough dielectric specular lobe, preserving useful
+asset-authored viewport colors without treating unsupported bound materials as
+unbound.
+
 Camera motion uses a low-latency preview at half resolution and two bounces.
 When motion stops, the render pass immediately returns to full-resolution,
 five-bounce progressive accumulation. Opaque scenes use Vulkan's opaque
@@ -50,7 +64,8 @@ compute material ABI.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
 phases, [Subdivision plan](docs/subdivision-plan.md) for the staged OpenSubdiv
-integration, and [Building](docs/building.md) for local dependency setup.
+integration, [Gallery](gallery.md) for versioned reference renders and timings,
+and [Building](docs/building.md) for local dependency setup.
 
 ## Quick start
 
@@ -71,6 +86,7 @@ On this workstation the complete standalone flow is:
 compile.bat
 validate_usd.bat
 render_test.bat
+render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda gallery\chess_board.jpg
 launch_codex.bat
 ```
 

@@ -65,13 +65,24 @@ cutouts mark their geometry and ray queries opaque, bypassing opacity candidate
 evaluation for primary, continuation, and shadow rays. Materials also skip
 inactive transmission, subsurface, and coat work.
 
-The integrator traces up to five bounces, samples an analytic sky, performs
-explicit sun shadow queries, and evaluates Lambert diffuse plus dielectric,
-metal, and layered-coat GGX reflection. It accumulates one stochastic sample per
-Hydra execute and converges at 64 samples. Scene or camera changes reset
-accumulation. Geometry is flattened into one world-space BLAS for this first
-functional path; per-mesh BLAS caching and TLAS instance updates remain a
-performance optimization.
+The integrator traces up to five bounces and evaluates Lambert diffuse plus
+dielectric, metal, and layered-coat GGX reflection. It uploads as many as 64
+visible UsdLux DomeLight and RectLight records with their color temperature,
+intensity/exposure, diffuse/specular controls, shaping, texture, transform, and
+shadow parameters. Dome textures are evaluated for background rays and sampled
+uniformly for direct lighting; rectangles are sampled in area and converted to
+solid-angle measure. One authored light is selected per shading event and its
+selection probability is included in the estimator. RectLight `normalize`
+divides emitted radiance by world-space area as required by UsdLux.
+
+If the stage contains no supported authored lights, the shader falls back to a
+neutral analytic sky and a shadow-casting sun at 75° elevation with an oblique
+azimuth. This keeps `usdrecord --disableCameraLight` useful for unlit assets
+without mixing fallback illumination into authored-light scenes. The renderer
+accumulates one stochastic sample per Hydra execute and converges at 64 samples.
+Scene or camera changes reset accumulation. Geometry is flattened into one
+world-space BLAS for this first functional path; per-mesh BLAS caching and TLAS
+instance updates remain a performance optimization.
 
 While the camera changes, the render pass traces at half width and height with a
 two-bounce limit, then nearest-upscales the preview into the Hydra color AOV.
@@ -134,6 +145,12 @@ Specular and coat use energy-partitioned GGX lobes for direct and indirect
 lighting. Standard Surface subsurface weight, color, radius, and scale are
 lowered to a realtime attenuation and wrapped-diffuse approximation; this is
 not yet a random-walk BSSRDF.
+
+Meshes with no material binding retain the linear `displayColor` supplied by
+Hydra. The scene builder deduplicates these colors and assigns a default
+material with Lambert diffuse, roughness 0.5, and the 4% dielectric reflection
+of IOR 1.5. This fallback is restricted to empty material IDs; a bound but
+unsupported material continues through the normal material fallback path.
 
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute

@@ -4,6 +4,7 @@
 
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/gf/vec3f.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 
@@ -36,6 +37,7 @@ private:
     VtVec3fArray _normals;
     VtIntArray _normalIndices;
     HdInterpolation _normalInterpolation{HdInterpolationConstant};
+    GfVec3f _displayColor{0.5F};
     GfMatrix4d _transform{1.0};
     bool _visible{true};
 };

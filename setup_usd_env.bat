@@ -30,3 +30,10 @@ EXIT /B 1
 SET "PXR_PLUGINPATH_NAME=%USDROOT%;%USDROOT%\plugin\usd;%USDEXTRA%\plugin\usd"
 SET "PYTHONPATH=%USDROOT%\lib\python;%USDEXTRA%\lib\python;%PYTHONPATH%"
 SET "PATH=%HDCODEX_PYTHON%;%USDROOT%\bin;%USDEXTRA%\bin;%USDROOT%\lib;%USDEXTRA%\lib;%PATH%"
+
+REM This OpenUSD installation includes the RenderMan OSL parser. Make its
+REM runtime dependency visible when the matching RenderMan install is present;
+REM non-RenderMan setups continue to use the standalone USD paths above.
+SET "HDCODEX_RMAN=C:\Program Files\Pixar\RenderManProServer-26.3"
+IF DEFINED RMANTREE IF EXIST "%RMANTREE%\lib\libprman.dll" SET "HDCODEX_RMAN=%RMANTREE%"
+IF EXIST "%HDCODEX_RMAN%\lib\libprman.dll" SET "PATH=%HDCODEX_RMAN%\bin;%HDCODEX_RMAN%\lib;%PATH%"
