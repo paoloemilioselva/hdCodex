@@ -7,6 +7,7 @@ add_library(hdCodex SHARED
   render_delegate.cpp
   render_pass.cpp
   renderer_plugin.cpp
+  texture_loader.cpp
 )
 
 target_link_libraries(hdCodex

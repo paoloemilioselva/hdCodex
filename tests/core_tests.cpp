@@ -131,6 +131,20 @@ void TestSceneDeduplicatesDecodedTextures()
     Require(snapshot->textures.size() == 1, "decoded texture was not published");
     Require(snapshot->textures.front().rgba == texture.rgba,
             "published texture pixels changed");
+
+    hdcodex::SceneTexture environment;
+    environment.id = "studio.exr#auto-hdr";
+    environment.sourcePath = "studio.exr";
+    environment.width = 1;
+    environment.height = 1;
+    environment.rgbaFloat = {4.0F, 2.0F, 1.0F, 1.0F};
+    scene.UpsertTexture(environment);
+    (void)scene.Publish();
+    const auto hdrSnapshot = scene.Snapshot();
+    Require(hdrSnapshot->textures.size() == 2,
+            "HDR light texture was not published");
+    Require(hdrSnapshot->textures.back().rgbaFloat[0] == 4.0F,
+            "HDR light texture was clamped");
 }
 
 } // namespace

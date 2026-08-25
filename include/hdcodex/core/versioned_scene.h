@@ -70,6 +70,9 @@ struct SceneTexture {
     std::uint32_t height{0};
     bool srgb{false};
     std::vector<std::uint8_t> rgba;
+    /// Linear floating-point pixels are used for HDR light textures. Material
+    /// textures retain the compact RGBA8 path above.
+    std::vector<float> rgbaFloat;
 };
 
 struct SceneSnapshot {
@@ -162,9 +165,10 @@ public:
 
     void UpsertTexture(SceneTexture texture)
     {
+        const std::size_t expected = static_cast<std::size_t>(texture.width) *
+            texture.height * 4U;
         if (texture.id.empty() || texture.width == 0 || texture.height == 0 ||
-            texture.rgba.size() != static_cast<std::size_t>(texture.width) *
-                texture.height * 4U) return;
+            (texture.rgba.size() != expected && texture.rgbaFloat.size() != expected)) return;
         const std::scoped_lock lock(_mutex);
         _textures[texture.id] = std::move(texture);
         (void)MarkDirty();

@@ -681,8 +681,10 @@ public:
     Texture CreateTexture(const SceneTexture& source)
     {
         Texture result;
-        const VkFormat format = source.srgb
-            ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        const bool floatingPoint = !source.rgbaFloat.empty();
+        const VkFormat format = floatingPoint
+            ? VK_FORMAT_R32G32B32A32_SFLOAT
+            : (source.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
         const VkImageCreateInfo imageInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .imageType = VK_IMAGE_TYPE_2D,
@@ -725,11 +727,17 @@ public:
             Check(vkCreateImageView(device, &viewInfo, nullptr, &result.view),
                   "vkCreateImageView");
 
-            Buffer staging = CreateBuffer(source.rgba.size(),
+            const void* pixelData = floatingPoint
+                ? static_cast<const void*>(source.rgbaFloat.data())
+                : static_cast<const void*>(source.rgba.data());
+            const VkDeviceSize pixelBytes = floatingPoint
+                ? source.rgbaFloat.size() * sizeof(float)
+                : source.rgba.size();
+            Buffer staging = CreateBuffer(pixelBytes,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                 false);
-            std::memcpy(staging.mapped, source.rgba.data(), source.rgba.size());
+            std::memcpy(staging.mapped, pixelData, static_cast<std::size_t>(pixelBytes));
             try {
                 Submit([&](VkCommandBuffer command) {
                 VkImageMemoryBarrier toTransfer{
