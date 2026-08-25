@@ -147,9 +147,13 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
     } else if (_pathTracer->HasGeometry() && width > 0 && height > 0 &&
                _sampleIndex < targetSamples) {
         try {
+            constexpr unsigned int samplesPerDispatch = 8U;
+            const unsigned int sampleCount = std::min(
+                samplesPerDispatch, targetSamples - _sampleIndex);
             colorBuffer->WriteFloat4(
-                _pathTracer->Render(camera, width, height, _sampleIndex));
-            ++_sampleIndex;
+                _pathTracer->Render(camera, width, height, _sampleIndex,
+                                    5U, sampleCount));
+            _sampleIndex += sampleCount;
         } catch (const std::exception& error) {
             TF_WARN("hdCodex Vulkan path trace failed: %s", error.what());
             colorBuffer->Clear(colorBinding->clearValue);

@@ -423,7 +423,12 @@ void main()
     uvec2 pixel = gl_GlobalInvocationID.xy;
     if (pixel.x >= camera.frame.x || pixel.y >= camera.frame.y) return;
     uint index = pixel.y * camera.frame.x + pixel.x;
-    uint rng = hashState(index ^ (camera.frame.z * 0x9e3779b9u) ^ 0xa511e9b3u);
+    uint sampleCount = max(uint(camera.origin.w + 0.5), 1u);
+    vec3 batchRadiance = vec3(0.0);
+    for (uint sampleOffset = 0u; sampleOffset < sampleCount; ++sampleOffset)
+    {
+    uint sampleNumber = camera.frame.z + sampleOffset;
+    uint rng = hashState(index ^ (sampleNumber * 0x9e3779b9u) ^ 0xa511e9b3u);
     vec2 jitter = vec2(randomFloat(rng), randomFloat(rng));
     vec2 uv = (vec2(pixel) + jitter) / vec2(camera.frame.xy);
 
@@ -709,9 +714,13 @@ void main()
         }
     }
 
+    batchRadiance += radiance;
+    }
     vec3 previous = pixels[index].rgb;
-    float weight = 1.0 / float(camera.frame.z + 1u);
-    pixels[index] = vec4(mix(previous, radiance, weight), 1.0);
+    float previousWeight = float(camera.frame.z);
+    float totalWeight = previousWeight + float(sampleCount);
+    pixels[index] = vec4(
+        (previous * previousWeight + batchRadiance) / totalWeight, 1.0);
 }
 )glsl";
 
@@ -1190,7 +1199,7 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v7";
+        options.generatorVersion = "hdCodex.pathtracer.v8";
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v4";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
@@ -1697,7 +1706,8 @@ public:
 
     std::vector<float> Trace(const PathTracerCamera& camera, std::uint32_t width,
                              std::uint32_t height, std::uint32_t sample,
-                             std::uint32_t maxBounces)
+                             std::uint32_t maxBounces,
+                             std::uint32_t sampleCount)
     {
         if (!geometryReady || width == 0 || height == 0) return {};
         EnsureOutput(width, height);
@@ -1707,7 +1717,8 @@ public:
             fallbackAxisInitialized = true;
         }
         CameraUniform data{
-            {camera.origin[0], camera.origin[1], camera.origin[2], 0.0F},
+            {camera.origin[0], camera.origin[1], camera.origin[2],
+             static_cast<float>(std::max(sampleCount, 1U))},
             {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2], 0.0F},
             {camera.horizontal[0], camera.horizontal[1], camera.horizontal[2], 0.0F},
             {camera.vertical[0], camera.vertical[1], camera.vertical[2],
@@ -1815,9 +1826,11 @@ void VulkanPathTracer::SetScene(const std::shared_ptr<const SceneSnapshot>& scen
 }
 std::vector<float> VulkanPathTracer::Render(
     const PathTracerCamera& camera, std::uint32_t width, std::uint32_t height,
-    std::uint32_t sampleIndex, std::uint32_t maxBounces)
+    std::uint32_t sampleIndex, std::uint32_t maxBounces,
+    std::uint32_t sampleCount)
 {
-    return _impl->Trace(camera, width, height, sampleIndex, maxBounces);
+    return _impl->Trace(camera, width, height, sampleIndex, maxBounces,
+                        sampleCount);
 }
 bool VulkanPathTracer::HasGeometry() const noexcept { return _impl->geometryReady; }
 

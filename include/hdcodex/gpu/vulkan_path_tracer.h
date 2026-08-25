@@ -32,13 +32,14 @@ public:
 
     void SetScene(const std::shared_ptr<const SceneSnapshot>& scene);
 
-    /// Traces one progressive sample per pixel and returns linear RGBA32F.
+    /// Traces a progressive sample batch per pixel and returns linear RGBA32F.
     [[nodiscard]] std::vector<float> Render(
         const PathTracerCamera& camera,
         std::uint32_t width,
         std::uint32_t height,
         std::uint32_t sampleIndex,
-        std::uint32_t maxBounces = 5U);
+        std::uint32_t maxBounces = 5U,
+        std::uint32_t sampleCount = 1U);
 
     [[nodiscard]] bool HasGeometry() const noexcept;
 

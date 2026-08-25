@@ -121,6 +121,13 @@ try {
     const auto progressive = tracer.Render(camera, width, height, 1);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
 
+    const auto batched = tracer.Render(camera, width, height, 0, 5U, 2U);
+    Check(batched.size() == progressive.size(), "batched image size changed");
+    for (std::size_t index = 0; index < batched.size(); ++index) {
+        Check(std::abs(batched[index] - progressive[index]) < 1e-5F,
+              "batched samples changed the progressive estimator");
+    }
+
     const auto interactive = tracer.Render(camera, width / 2U, height / 2U, 0U, 2U);
     Check(interactive.size() == width * height,
           "reduced-resolution interactive render size is incorrect");
