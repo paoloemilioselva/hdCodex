@@ -637,6 +637,47 @@ public:
         return result;
     }
 
+    Buffer CreateDeviceBufferWithData(
+        const void* data,
+        VkDeviceSize size,
+        VkBufferUsageFlags usage,
+        bool address,
+        VkPipelineStageFlags destinationStages,
+        VkAccessFlags destinationAccess)
+    {
+        Buffer destination = CreateBuffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, address);
+        Buffer staging;
+        try {
+            staging = CreateBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                false);
+            std::memcpy(staging.mapped, data, static_cast<std::size_t>(size));
+            Submit([&](VkCommandBuffer currentCommand) {
+                const VkBufferCopy copy{.size = size};
+                vkCmdCopyBuffer(currentCommand, staging.handle, destination.handle, 1, &copy);
+                const VkBufferMemoryBarrier ready{
+                    .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = destinationAccess,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = destination.handle,
+                    .offset = 0,
+                    .size = destination.size,
+                };
+                vkCmdPipelineBarrier(currentCommand, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    destinationStages, 0, 0, nullptr, 1, &ready, 0, nullptr);
+            });
+            DestroyBuffer(staging);
+            return destination;
+        } catch (...) {
+            DestroyBuffer(staging);
+            DestroyBuffer(destination);
+            throw;
+        }
+    }
+
     Texture CreateTexture(const SceneTexture& source)
     {
         Texture result;
@@ -1116,32 +1157,30 @@ public:
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        vertexBuffer = CreateBuffer(vertices.size() * sizeof(GpuVertex), inputUsage,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
-        indexBuffer = CreateBuffer(indices.size() * sizeof(std::uint32_t), inputUsage,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
-        std::memcpy(vertexBuffer.mapped, vertices.data(), static_cast<std::size_t>(vertexBuffer.size));
-        std::memcpy(indexBuffer.mapped, indices.data(), static_cast<std::size_t>(indexBuffer.size));
-        triangleMaterialBuffer = CreateBuffer(
-            triangleMaterials.size() * sizeof(std::uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-        materialBuffer = CreateBuffer(materials.size() * sizeof(GpuMaterial),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-        std::memcpy(triangleMaterialBuffer.mapped, triangleMaterials.data(),
-                    static_cast<std::size_t>(triangleMaterialBuffer.size));
-        std::memcpy(materialBuffer.mapped, materials.data(),
-                    static_cast<std::size_t>(materialBuffer.size));
-        texcoordBuffer = CreateBuffer(texcoords.size() * sizeof(GpuTexcoord),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-        std::memcpy(texcoordBuffer.mapped, texcoords.data(),
-                    static_cast<std::size_t>(texcoordBuffer.size));
-        normalBuffer = CreateBuffer(normals.size() * sizeof(GpuNormal),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-        std::memcpy(normalBuffer.mapped, normals.data(),
-                    static_cast<std::size_t>(normalBuffer.size));
+        constexpr VkPipelineStageFlags geometryStages =
+            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        constexpr VkAccessFlags geometryAccess =
+            VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT;
+        vertexBuffer = CreateDeviceBufferWithData(vertices.data(),
+            vertices.size() * sizeof(GpuVertex), inputUsage, true,
+            geometryStages, geometryAccess);
+        indexBuffer = CreateDeviceBufferWithData(indices.data(),
+            indices.size() * sizeof(std::uint32_t), inputUsage, true,
+            geometryStages, geometryAccess);
+        triangleMaterialBuffer = CreateDeviceBufferWithData(triangleMaterials.data(),
+            triangleMaterials.size() * sizeof(std::uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        materialBuffer = CreateDeviceBufferWithData(materials.data(),
+            materials.size() * sizeof(GpuMaterial), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        texcoordBuffer = CreateDeviceBufferWithData(texcoords.data(),
+            texcoords.size() * sizeof(GpuTexcoord), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        normalBuffer = CreateDeviceBufferWithData(normals.data(),
+            normals.size() * sizeof(GpuNormal), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -1197,9 +1236,9 @@ public:
         instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         instance.accelerationStructureReference =
             vkGetAccelerationStructureDeviceAddressKHR(device, &addressInfo);
-        instanceBuffer = CreateBuffer(sizeof(instance), inputUsage,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true);
-        std::memcpy(instanceBuffer.mapped, &instance, sizeof(instance));
+        instanceBuffer = CreateDeviceBufferWithData(&instance, sizeof(instance), inputUsage,
+            true, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
         VkAccelerationStructureGeometryKHR tlasGeometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
