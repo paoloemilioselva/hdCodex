@@ -58,6 +58,13 @@ vendor RT hardware. The current implementation flattens visible world-space
 meshes into one BLAS and builds a one-instance TLAS whenever the published scene
 changes. Accumulation resets for scene, camera, or output-size changes.
 
+Static scene and accumulation buffers reside in device-local memory and are
+populated/read through staging buffers. A reusable command buffer and fence avoid
+per-sample command allocation and whole-queue idle waits. Scenes without alpha
+cutouts mark their geometry and ray queries opaque, bypassing opacity candidate
+evaluation for primary, continuation, and shadow rays. Materials also skip
+inactive transmission, subsurface, and coat work.
+
 The integrator traces up to five bounces, samples an analytic sky, performs
 explicit sun shadow queries, and evaluates Lambert diffuse plus dielectric,
 metal, and layered-coat GGX reflection. It accumulates one stochastic sample per
@@ -65,6 +72,11 @@ Hydra execute and converges at 64 samples. Scene or camera changes reset
 accumulation. Geometry is flattened into one world-space BLAS for this first
 functional path; per-mesh BLAS caching and TLAS instance updates remain a
 performance optimization.
+
+While the camera changes, the render pass traces at half width and height with a
+two-bounce limit, then nearest-upscales the preview into the Hydra color AOV.
+Once the camera is stationary it restarts at full resolution and the normal
+five-bounce limit, so interactive quality does not alter the converged result.
 
 Hydra instancing is flattened at scene synchronization time as well. The
 renderer-owned `HdCodexInstancer` composes the instancer transform with indexed
@@ -140,7 +152,10 @@ requirements, tests, and performance phases.
 ## Threading
 
 Scene mutation and publication are mutex-protected. Hydra executes GPU work on
-the render-pass thread, and the current backend waits for each compute
-submission before copying its host-visible color buffer. Persistent asynchronous
-command buffers, GPU-only accumulation, per-mesh BLAS reuse, and overlapped
-readback are the next performance milestone.
+the render-pass thread. The backend retains a command buffer, waits on a scoped
+fence, copies device-local accumulation into a host-visible staging buffer, and
+bulk-copies RGBA32F into the Hydra color AOV. A multi-buffered one-frame-latency
+readback or direct graphics-API interop would be required to remove the final
+synchronous CPU handoff. Per-mesh BLAS reuse, native TLAS instances, GPU timestamp
+instrumentation, ray-differential texture LODs, and overlapped readback remain
+future performance work.

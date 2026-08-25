@@ -4,7 +4,7 @@
 tracer. The primary backend uses Vulkan ray queries so hardware ray traversal is
 available across NVIDIA, AMD, and Intel devices. MaterialX graphs are generated
 to Vulkan GLSL, compiled to SPIR-V at runtime, and cached by content and compiler
-configuration.
+configuration. SPIR-V is performance-optimized by default.
 
 The project is intentionally not derived from `hdEmbree`. Hydra adapter classes
 use public OpenUSD APIs in the `pxr` namespace, while all renderer implementation
@@ -32,6 +32,12 @@ varying, and face-varying interpolation. Normals are transformed correctly for
 non-uniformly scaled meshes and instances before GPU interpolation. When a mesh
 does not author normals, the adapter generates smooth vertex normals from Hydra's
 public adjacency and smooth-normal utilities.
+
+Camera motion uses a low-latency preview at half resolution and two bounces.
+When motion stops, the render pass immediately returns to full-resolution,
+five-bounce progressive accumulation. Opaque scenes use Vulkan's opaque
+ray-query path, while scenes containing actual alpha cutouts retain candidate
+opacity evaluation.
 
 The supported graph subset follows direct image connections (including a
 `normalmap` node) into the surface. General MaterialX procedural graphs, UDIMs,
