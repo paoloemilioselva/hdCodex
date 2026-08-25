@@ -20,10 +20,10 @@ in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
 generation. PointInstancer and nested HdInstancer transforms are expanded from
 public Hydra APIs, including per-instance translation, rotation, scale, and
 matrix primvars. MaterialX modules are compiled and retained by Hydra materials;
-the GPU path integrator evaluates constant and image-driven
-`standard_surface`/Preview Surface base color, metalness, roughness, emission,
-opacity, tangent-space normals, transmission, dielectric/metal GGX specular,
-Standard Surface coat, and the Standard Surface subsurface inputs. Hydra
+the GPU path integrator evaluates constant and image-driven OpenPBR,
+`standard_surface`, and Preview Surface base color, metalness, roughness,
+emission, opacity, tangent-space normals, transmission, dielectric/metal GGX
+specular, coat, and subsurface inputs. Hydra
 face-varying/indexed UV seams are preserved, Hio
 decodes source images, and a partially-bound Vulkan descriptor array provides
 sRGB-aware texture sampling. Authored mesh `normals` and `primvars:normals`
@@ -39,7 +39,8 @@ and vertical-cross layouts. Rectangle lights support textured emission,
 world-space area normalization, shaping controls, diffuse/specular multipliers,
 and colored distance-limited shadows. When a stage has no supported authored
 lights, hdCodex retains a neutral analytic sky and an oblique default sun at 75°
-elevation so command-line renders remain usable with camera lighting disabled.
+elevation. Their up direction follows the active camera, allowing the fallback
+to work for both Y-up and Z-up stages when camera lighting is disabled.
 
 Meshes without a material binding use their Hydra `displayColor` as a linear
 base color. These colors are deduplicated into default GPU materials with

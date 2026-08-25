@@ -2,10 +2,10 @@
 ## Gallery
 
 These images are versioned visual baselines, not golden-reference renders.
-Intel Sponza and the StandardShaderBall variants currently exercise unsupported
-material fallbacks; KitchenSet exercises the unbound-mesh `displayColor`
-fallback. Image diffs should therefore reveal both intentional improvements and
-regressions as those paths evolve.
+The StandardShaderBall variants exercise OpenPBR glass, metal, subsurface, and
+image-texture lowering. KitchenSet remains in its authored Z-up coordinates and
+exercises the unbound-mesh `displayColor` fallback. Image diffs should reveal
+both intentional improvements and regressions as those paths evolve.
 
 ### Intel Sponza Base Scene
 **Reference:** [Intel Graphics Research Samples](http://intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html)
@@ -36,7 +36,7 @@ regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_bubblegum.usda gallery\shader_ball_bubblegum.jpg
 ```
-**Render Time:** 9.32 seconds
+**Render Time:** 16.97 seconds
 
 ![StandardShaderBall BubbleGum](gallery/shader_ball_bubblegum.jpg)
 
@@ -47,7 +47,7 @@ regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_glass.usda gallery\shader_ball_glass.jpg
 ```
-**Render Time:** 9.33 seconds
+**Render Time:** 16.56 seconds
 
 ![StandardShaderBall Glass](gallery/shader_ball_glass.jpg)
 
@@ -58,7 +58,7 @@ regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_gold.usda gallery\shader_ball_gold.jpg
 ```
-**Render Time:** 9.33 seconds
+**Render Time:** 16.58 seconds
 
 ![StandardShaderBall Gold](gallery/shader_ball_gold.jpg)
 
@@ -69,7 +69,7 @@ regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\pixar_kitchen.usda gallery\pixar_kitchen.jpg
 ```
-**Render Time:** 8.38 seconds
+**Render Time:** 8.35 seconds
 
 ![Pixar's KitchenSet](gallery/pixar_kitchen.jpg)
 

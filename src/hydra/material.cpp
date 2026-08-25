@@ -170,6 +170,7 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             (void)path;
             const std::string type = node.nodeTypeId.GetString();
             if (type.find("standard_surface") != std::string::npos ||
+                type.find("open_pbr_surface") != std::string::npos ||
                 type.find("UsdPreviewSurface") != std::string::npos) {
                 surface = &node;
                 break;
@@ -180,6 +181,79 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
 
     const HdMaterialNode2& node = *surface;
     const std::string type = node.nodeTypeId.GetString();
+    if (type.find("open_pbr_surface") != std::string::npos) {
+        material.baseColor = ColorParameter(node, "base_color", material.baseColor);
+        material.metalness = FloatParameter(node, "base_metalness", material.metalness);
+        material.roughness = FloatParameter(
+            node, "specular_roughness", material.roughness);
+        material.emissionWeight = FloatParameter(node, "emission_luminance", 0.0F);
+        material.emission = ColorParameter(node, "emission_color", material.emission);
+        for (float& component : material.emission) component *= material.emissionWeight;
+        material.opacity = FloatParameter(node, "geometry_opacity", material.opacity);
+        material.transmission = FloatParameter(
+            node, "transmission_weight", material.transmission);
+        material.transmissionColor = ColorParameter(
+            node, "transmission_color", material.transmissionColor);
+        material.indexOfRefraction = FloatParameter(
+            node, "specular_ior", material.indexOfRefraction);
+        material.specularWeight = FloatParameter(
+            node, "specular_weight", material.specularWeight);
+        material.specularColor = ColorParameter(
+            node, "specular_color", material.specularColor);
+        material.coat = FloatParameter(node, "coat_weight", material.coat);
+        material.coatColor = ColorParameter(node, "coat_color", material.coatColor);
+        material.coatRoughness = FloatParameter(
+            node, "coat_roughness", material.coatRoughness);
+        material.coatIndexOfRefraction = FloatParameter(
+            node, "coat_ior", material.coatIndexOfRefraction);
+        material.thinWalled = BoolParameter(
+            node, "geometry_thin_walled", material.thinWalled);
+        material.subsurface = FloatParameter(
+            node, "subsurface_weight", material.subsurface);
+        material.subsurfaceColor = ColorParameter(
+            node, "subsurface_color", material.subsurfaceColor);
+        const float subsurfaceRadius = FloatParameter(node, "subsurface_radius", 1.0F);
+        material.subsurfaceRadius = ColorParameter(
+            node, "subsurface_radius_scale", material.subsurfaceRadius);
+        for (float& component : material.subsurfaceRadius) {
+            component *= subsurfaceRadius;
+        }
+        // OpenPBR radius is a profile/mean-free-path control, not an
+        // absorption distance. The path tracer's current wrapped-diffuse
+        // approximation keeps the authored color without exponential loss.
+        material.subsurfaceScale = 0.0F;
+        material.baseColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "base_color"), true);
+        material.metalnessTexture = LoadTexture(
+            scene, TextureForInput(network, node, "base_metalness"), false);
+        material.roughnessTexture = LoadTexture(
+            scene, TextureForInput(network, node, "specular_roughness"), false);
+        material.emissionTexture = LoadTexture(
+            scene, TextureForInput(network, node, "emission_color"), true);
+        material.opacityTexture = LoadTexture(
+            scene, TextureForInput(network, node, "geometry_opacity"), false);
+        material.normalTexture = LoadTexture(
+            scene, TextureForInput(network, node, "geometry_normal"), false);
+        material.transmissionTexture = LoadTexture(
+            scene, TextureForInput(network, node, "transmission_color"), true);
+        material.specularTexture = LoadTexture(
+            scene, TextureForInput(network, node, "specular_weight"), false);
+        material.specularColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "specular_color"), true);
+        material.coatTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat_weight"), false);
+        material.coatColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat_color"), true);
+        material.coatRoughnessTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat_roughness"), false);
+        material.subsurfaceTexture = LoadTexture(
+            scene, TextureForInput(network, node, "subsurface_weight"), false);
+        material.subsurfaceColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "subsurface_color"), true);
+        material.subsurfaceRadiusTexture = LoadTexture(
+            scene, TextureForInput(network, node, "subsurface_radius_scale"), false);
+        return material;
+    }
     if (type.find("standard_surface") != std::string::npos) {
         material.baseColor = ColorParameter(node, "base_color", material.baseColor);
         material.metalness = FloatParameter(node, "metalness", material.metalness);

@@ -215,6 +215,24 @@ try {
           "unbound mesh did not use its Hydra display color");
     Check(fallbackCornerLuma > 0.05F,
           "default sky did not illuminate a lightless scene background");
+
+    scene->meshes.front().positions = {
+        -1.25F, -3.0F, -1.0F,
+         0.0F,  -3.0F,  1.2F,
+         1.25F, -3.0F, -1.0F,
+    };
+    tracer.SetScene(scene);
+    const hdcodex::PathTracerCamera zUpCamera{
+        .origin = {0.0F, 0.0F, 0.0F},
+        .lowerLeft = {-1.0F, -1.0F, -1.0F},
+        .horizontal = {2.0F, 0.0F, 0.0F},
+        .vertical = {0.0F, 0.0F, 2.0F},
+    };
+    const auto zUpFallback = tracer.Render(zUpCamera, width, height, 0);
+    const float zUpCenterLuma = zUpFallback[center] +
+        zUpFallback[center + 1] + zUpFallback[center + 2];
+    Check(zUpCenterLuma > 0.05F,
+          "default sunlight did not illuminate a Z-up lightless scene");
     std::error_code error;
     std::filesystem::remove_all(cacheRoot, error);
     std::cout << "Vulkan BLAS/TLAS ray-query path trace passed on "

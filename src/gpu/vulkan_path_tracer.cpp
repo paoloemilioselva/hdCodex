@@ -260,7 +260,9 @@ vec3 environment(vec3 direction)
     vec3 result = vec3(0.0);
     uint lightCount = (camera.frame.w >> 16u) & 0xffu;
     if (lightCount == 0u) {
-        float t = 0.5 * (direction.y + 1.0);
+        vec3 up = dot(camera.vertical.xyz, camera.vertical.xyz) > 1e-12
+            ? normalize(camera.vertical.xyz) : vec3(0.0, 1.0, 0.0);
+        float t = 0.5 * (dot(direction, up) + 1.0);
         return mix(vec3(0.035, 0.045, 0.065),
                    vec3(0.38, 0.55, 0.85), t);
     }
@@ -621,8 +623,19 @@ void main()
         } else {
             // Default to an oblique 75-degree sun when usdrecord's camera
             // light is disabled and the stage authors no lights of its own.
-            const vec3 sunDirection = vec3(
-                0.1830127, 0.9659258, 0.1830127);
+            vec3 up = dot(camera.vertical.xyz, camera.vertical.xyz) > 1e-12
+                ? normalize(camera.vertical.xyz) : vec3(0.0, 1.0, 0.0);
+            vec3 right = dot(camera.horizontal.xyz, camera.horizontal.xyz) > 1e-12
+                ? normalize(camera.horizontal.xyz) : vec3(1.0, 0.0, 0.0);
+            vec3 view = normalize(camera.lowerLeft.xyz +
+                camera.horizontal.xyz * 0.5 + camera.vertical.xyz * 0.5 -
+                camera.origin.xyz);
+            vec3 backward = -view - up * dot(-view, up);
+            backward = dot(backward, backward) > 1e-12
+                ? normalize(backward) : right;
+            vec3 azimuth = normalize(right + backward);
+            const vec3 sunDirection = normalize(
+                up * 0.9659258 + azimuth * 0.2588190);
             vec3 direct = evaluateDirectSurface(
                 normal, viewDirection, sunDirection, diffuseColor,
                 transmission, subsurface, metalness, roughness, f0,

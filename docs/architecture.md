@@ -118,8 +118,9 @@ The default pipeline is:
 3. Compile the generated raster stages to SPIR-V with glslang and cache them
    under a SHA-256 key containing source, generator/compiler versions, target,
    and ABI.
-4. Separately lower supported Standard/Preview Surface parameters and connected
-   image nodes into the path tracer's compute material ABI.
+4. Separately lower supported OpenPBR, Standard Surface, and Preview Surface
+   parameters and connected image nodes into the path tracer's compute material
+   ABI.
 5. Decode referenced images through Hio and upload them to descriptor-indexed
    Vulkan images with sRGB/raw formats selected per input role.
 
@@ -133,18 +134,18 @@ prefix in expressions. The compatibility adapter removes only this stale
 prefix before glslang validation. It can be deleted when the standalone OpenUSD
 distribution moves to a MaterialX version with the corrected generator.
 
-The GPU BSDF binding supports constant and image-driven `standard_surface` and
-Preview Surface base color, metalness, specular roughness, emission, opacity,
-tangent-space normals, transmission, dielectric specular, and Standard Surface
-coat. Indexed and face-varying UVs are triangulated in face-corner order. Images
-are normalized to RGBA8, uploaded as sRGB or raw Vulkan images, and accessed
-through a partially-bound descriptor array currently capped at 256 textures.
+The GPU BSDF binding supports constant and image-driven OpenPBR,
+`standard_surface`, and Preview Surface base color, metalness, specular
+roughness, emission, opacity, tangent-space normals, transmission, dielectric
+specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
+order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
+and accessed through a partially-bound descriptor array currently capped at
+256 textures.
 Opacity participates in primary and shadow ray-query candidate confirmation.
 Transmission supports color, IOR/Fresnel refraction, and thin-walled surfaces.
 Specular and coat use energy-partitioned GGX lobes for direct and indirect
-lighting. Standard Surface subsurface weight, color, radius, and scale are
-lowered to a realtime attenuation and wrapped-diffuse approximation; this is
-not yet a random-walk BSSRDF.
+lighting. Standard Surface and OpenPBR subsurface controls are lowered to a
+realtime wrapped-diffuse approximation; this is not yet a random-walk BSSRDF.
 
 Meshes with no material binding retain the linear `displayColor` supplied by
 Hydra. The scene builder deduplicates these colors and assigns a default
