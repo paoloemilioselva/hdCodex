@@ -128,11 +128,17 @@ SpirvModule GlslCompiler::Compile(
     if (source.empty()) throw std::invalid_argument("GLSL source must not be empty");
     if (options.entryPoint.empty()) throw std::invalid_argument("GLSL entry point must not be empty");
 
+    const char* optimization = "optperformance";
+    if (options.optimization == GlslCompileOptions::Optimization::None) {
+        optimization = "noopt";
+    } else if (options.optimization == GlslCompileOptions::Optimization::Size) {
+        optimization = "optsize";
+    }
     const std::array<std::string, 4> keyOptions = {
         StageName(stage),
         options.entryPoint,
         options.generateDebugInfo ? "debug" : "nodebug",
-        options.optimizeForSize ? "optsize" : "noopt",
+        optimization,
     };
     const std::string compilerVersion = Version();
     const ShaderCacheKeyInput keyInput{
@@ -203,8 +209,10 @@ SpirvModule GlslCompiler::Compile(
     glslang_spv_options_t spvOptions{};
     spvOptions.generate_debug_info = options.generateDebugInfo;
     spvOptions.strip_debug_info = !options.generateDebugInfo;
-    spvOptions.disable_optimizer = !options.optimizeForSize;
-    spvOptions.optimize_size = options.optimizeForSize;
+    spvOptions.disable_optimizer =
+        options.optimization == GlslCompileOptions::Optimization::None;
+    spvOptions.optimize_size =
+        options.optimization == GlslCompileOptions::Optimization::Size;
     spvOptions.validate = true;
     glslang_program_SPIRV_generate_with_options(program.get(), nativeStage, &spvOptions);
 

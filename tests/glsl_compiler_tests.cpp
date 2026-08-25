@@ -48,6 +48,14 @@ void main()
     Check(second.cacheKey == first.cacheKey, "cache key changed between identical compilations");
     Check(second.words == first.words, "cached SPIR-V differs from compiled output");
 
+    hdcodex::GlslCompileOptions unoptimized;
+    unoptimized.optimization = hdcodex::GlslCompileOptions::Optimization::None;
+    const auto third = compiler.Compile(
+        source, hdcodex::GlslShaderStage::Compute, "ray-query-test.comp", unoptimized);
+    Check(!third.cacheHit, "different optimization mode unexpectedly hit the cache");
+    Check(third.cacheKey != first.cacheKey,
+          "optimization mode was not included in the cache key");
+
     bool invalidSourceRejected = false;
     try {
         (void)compiler.Compile("#version 460\nthis is invalid;", hdcodex::GlslShaderStage::Compute, "invalid.comp");

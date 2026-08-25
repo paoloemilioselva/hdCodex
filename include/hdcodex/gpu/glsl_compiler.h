@@ -22,8 +22,14 @@ enum class GlslShaderStage {
 };
 
 struct GlslCompileOptions {
+    enum class Optimization {
+        None,
+        Performance,
+        Size,
+    };
+
     bool generateDebugInfo = false;
-    bool optimizeForSize = false;
+    Optimization optimization = Optimization::Performance;
     std::string entryPoint = "main";
     std::string generatorVersion = "hdCodex.glsl.v1";
     std::string materialAbi = "hdcodex.bsdf.v1";
