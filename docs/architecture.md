@@ -78,7 +78,9 @@ divides emitted radiance by world-space area as required by UsdLux.
 If the stage contains no supported authored lights, the shader falls back to a
 neutral analytic sky and a shadow-casting sun at 75° elevation with an oblique
 azimuth. This keeps `usdrecord --disableCameraLight` useful for unlit assets
-without mixing fallback illumination into authored-light scenes. The renderer
+without mixing fallback illumination into authored-light scenes. The Y-up or
+Z-up fallback axis is inferred once from the initial camera; the sky and sun
+then remain fixed in world space as the camera moves. The renderer
 accumulates one stochastic sample per Hydra execute and converges at 64 samples.
 Scene or camera changes reset accumulation. Geometry is flattened into one
 world-space BLAS for this first functional path; per-mesh BLAS caching and TLAS
@@ -96,6 +98,18 @@ expands parent instancers. This supports PointInstancer and nested HdInstancer
 chains without depending on `hdEmbree` implementation symbols. Moving these
 instances into reusable BLAS plus native TLAS instances is a future performance
 optimization.
+
+The delegate advertises Hydra `extComputation` sprims and evaluates computed
+primvars through `HdExtComputationUtils` during mesh synchronization. This lets
+UsdImaging's public UsdSkel adapter provide CPU-skinned points and normals at the
+current time code. Animated deformation dirties the mesh, rebuilds the flattened
+geometry and BLAS, and resets accumulation; cached deforming BLAS updates remain
+a future performance optimization.
+
+Hydra face-set material subsets are lowered to per-triangle material IDs using
+the coarse-face index encoded by `HdMeshUtil` during triangulation. The GPU
+already shades through a triangle-material buffer, so subset support does not
+duplicate vertices or split deforming meshes.
 
 UsdImaging resolves the schema `normals` attribute and `primvars:normals` into
 the Hydra `normals` primvar, with the primvar taking precedence. The mesh adapter

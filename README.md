@@ -19,7 +19,9 @@ five-bounce progressive ray-query path integrator, Hydra color-AOV output, an
 in-process GLSL-to-SPIR-V compiler, and cached MaterialX Vulkan shader
 generation. PointInstancer and nested HdInstancer transforms are expanded from
 public Hydra APIs, including per-instance translation, rotation, scale, and
-matrix primvars. MaterialX modules are compiled and retained by Hydra materials;
+matrix primvars. Hydra CPU `extComputation` primvars are evaluated during mesh
+synchronization, providing animated UsdSkel-skinned points and normals.
+MaterialX modules are compiled and retained by Hydra materials;
 the GPU path integrator evaluates constant and image-driven OpenPBR,
 `standard_surface`, and Preview Surface base color, metalness, roughness,
 emission, opacity, tangent-space normals, transmission, dielectric/metal GGX
@@ -33,14 +35,17 @@ non-uniformly scaled meshes and instances before GPU interpolation. When a mesh
 does not author normals, the adapter generates smooth vertex normals from Hydra's
 public adjacency and smooth-normal utilities.
 
+Hydra mesh face subsets retain their independent material bindings after
+triangulation, including subsets on animated UsdSkel meshes.
+
 UsdLux `DomeLight` and `RectLight` prims now drive GPU lighting directly. Dome
 lights support HDR textures and the standard lat-long, mirrored-ball, angular,
 and vertical-cross layouts. Rectangle lights support textured emission,
 world-space area normalization, shaping controls, diffuse/specular multipliers,
 and colored distance-limited shadows. When a stage has no supported authored
 lights, hdCodex retains a neutral analytic sky and an oblique default sun at 75°
-elevation. Their up direction follows the active camera, allowing the fallback
-to work for both Y-up and Z-up stages when camera lighting is disabled.
+elevation. The fallback selects a stable Y-up or Z-up world axis from the
+initial camera and does not move when the camera rotates.
 
 Meshes without a material binding use their Hydra `displayColor` as a linear
 base color. These colors are deduplicated into default GPU materials with

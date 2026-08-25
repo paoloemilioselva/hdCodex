@@ -14,6 +14,7 @@
 #endif
 
 #include "pxr/base/gf/vec4f.h"
+#include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/instancer.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/tokens.h"
@@ -27,6 +28,7 @@ const TfTokenVector SupportedSprims = {
     HdPrimTypeTokens->material,
     HdPrimTypeTokens->domeLight,
     HdPrimTypeTokens->rectLight,
+    HdPrimTypeTokens->extComputation,
 };
 const TfTokenVector SupportedBprims = {HdPrimTypeTokens->renderBuffer};
 
@@ -109,6 +111,9 @@ HdSprim* HdCodexRenderDelegate::CreateSprim(const TfToken& typeId, const SdfPath
     }
     if (typeId == HdPrimTypeTokens->material) {
         return new HdCodexMaterial(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->extComputation) {
+        return new HdExtComputation(sprimId);
     }
     if (typeId == HdPrimTypeTokens->domeLight ||
         typeId == HdPrimTypeTokens->rectLight) {

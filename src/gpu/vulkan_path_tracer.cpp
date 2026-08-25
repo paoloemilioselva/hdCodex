@@ -260,8 +260,8 @@ vec3 environment(vec3 direction)
     vec3 result = vec3(0.0);
     uint lightCount = (camera.frame.w >> 16u) & 0xffu;
     if (lightCount == 0u) {
-        vec3 up = dot(camera.vertical.xyz, camera.vertical.xyz) > 1e-12
-            ? normalize(camera.vertical.xyz) : vec3(0.0, 1.0, 0.0);
+        vec3 up = camera.vertical.w > 0.5
+            ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
         float t = 0.5 * (dot(direction, up) + 1.0);
         return mix(vec3(0.035, 0.045, 0.065),
                    vec3(0.38, 0.55, 0.85), t);
@@ -623,17 +623,11 @@ void main()
         } else {
             // Default to an oblique 75-degree sun when usdrecord's camera
             // light is disabled and the stage authors no lights of its own.
-            vec3 up = dot(camera.vertical.xyz, camera.vertical.xyz) > 1e-12
-                ? normalize(camera.vertical.xyz) : vec3(0.0, 1.0, 0.0);
-            vec3 right = dot(camera.horizontal.xyz, camera.horizontal.xyz) > 1e-12
-                ? normalize(camera.horizontal.xyz) : vec3(1.0, 0.0, 0.0);
-            vec3 view = normalize(camera.lowerLeft.xyz +
-                camera.horizontal.xyz * 0.5 + camera.vertical.xyz * 0.5 -
-                camera.origin.xyz);
-            vec3 backward = -view - up * dot(-view, up);
-            backward = dot(backward, backward) > 1e-12
-                ? normalize(backward) : right;
-            vec3 azimuth = normalize(right + backward);
+            bool zUp = camera.vertical.w > 0.5;
+            vec3 up = zUp ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+            vec3 azimuth = zUp
+                ? normalize(vec3(1.0, 1.0, 0.0))
+                : normalize(vec3(1.0, 0.0, 1.0));
             const vec3 sunDirection = normalize(
                 up * 0.9659258 + azimuth * 0.2588190);
             vec3 direct = evaluateDirectSurface(
@@ -1449,7 +1443,16 @@ public:
                 if (i0 < vertices.size() - base && i1 < vertices.size() - base &&
                     i2 < vertices.size() - base) {
                     indices.insert(indices.end(), {base + i0, base + i1, base + i2});
-                    triangleMaterials.push_back(materialIndex);
+                    const std::size_t triangleIndex = triangle / 3U;
+                    std::uint32_t triangleMaterialIndex = materialIndex;
+                    if (triangleIndex < mesh.triangleMaterialIds.size() &&
+                        mesh.triangleMaterialIds[triangleIndex] != mesh.materialId) {
+                        const auto foundTriangleMaterial = materialIndices.find(
+                            mesh.triangleMaterialIds[triangleIndex]);
+                        triangleMaterialIndex = foundTriangleMaterial ==
+                            materialIndices.end() ? 0U : foundTriangleMaterial->second;
+                    }
+                    triangleMaterials.push_back(triangleMaterialIndex);
                     for (std::size_t corner = 0; corner < 3U; ++corner) {
                         const std::size_t uvOffset = (triangle + corner) * 2U;
                         texcoords.push_back(uvOffset + 1U < mesh.texcoords.size()
@@ -1698,11 +1701,17 @@ public:
     {
         if (!geometryReady || width == 0 || height == 0) return {};
         EnsureOutput(width, height);
+        if (!fallbackAxisInitialized) {
+            fallbackZUp = std::abs(camera.vertical[2]) >
+                std::abs(camera.vertical[1]);
+            fallbackAxisInitialized = true;
+        }
         CameraUniform data{
             {camera.origin[0], camera.origin[1], camera.origin[2], 0.0F},
             {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2], 0.0F},
             {camera.horizontal[0], camera.horizontal[1], camera.horizontal[2], 0.0F},
-            {camera.vertical[0], camera.vertical[1], camera.vertical[2], 0.0F},
+            {camera.vertical[0], camera.vertical[1], camera.vertical[2],
+             fallbackZUp ? 1.0F : 0.0F},
             {width, height, sample,
              std::clamp(maxBounces, 1U, kMaxPathBounces) |
                  (sceneOpaque ? kOpaqueSceneFlag : 0U) |
@@ -1792,6 +1801,8 @@ public:
     std::vector<Texture> textures;
     bool geometryReady{false};
     bool sceneOpaque{true};
+    bool fallbackAxisInitialized{false};
+    bool fallbackZUp{false};
     std::uint32_t lightCount{0U};
 };
 

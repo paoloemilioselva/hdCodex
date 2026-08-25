@@ -22,6 +22,9 @@ struct SceneMesh {
     /// the geometric face-normal fallback in the path tracer.
     std::vector<float> normals;
     std::string materialId;
+    /// Optional material binding for each triangle in indices order. Hydra
+    /// face subsets are expanded through triangulation into this array.
+    std::vector<std::string> triangleMaterialIds;
     /// Linear Hydra display color used by the default material when this mesh
     /// has no authored material binding.
     std::array<float, 3> displayColor{0.5F, 0.5F, 0.5F};

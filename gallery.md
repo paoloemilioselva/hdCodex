@@ -4,7 +4,8 @@
 These images are versioned visual baselines, not golden-reference renders.
 The StandardShaderBall variants exercise OpenPBR glass, metal, subsurface, and
 image-texture lowering. KitchenSet remains in its authored Z-up coordinates and
-exercises the unbound-mesh `displayColor` fallback. Image diffs should reveal
+exercises the unbound-mesh `displayColor` fallback. CollectiveProject exercises
+UsdSkel deformation and per-face material subsets. Image diffs should reveal
 both intentional improvements and regressions as those paths evolve.
 
 ### Intel Sponza Base Scene
@@ -14,7 +15,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera PhysCamera001 gallery\intel_sponza.usda gallery\intel_sponza.jpg
 ```
-**Render Time:** 18.54 seconds
+**Render Time:** 31.79 seconds
 
 ![Intel Sponza Base Scene](gallery/intel_sponza.jpg)
 
@@ -25,7 +26,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda gallery\chess_board.jpg
 ```
-**Render Time:** 32.20 seconds
+**Render Time:** 39.36 seconds
 
 ![OpenChessSet](gallery/chess_board.jpg)
 
@@ -36,7 +37,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_bubblegum.usda gallery\shader_ball_bubblegum.jpg
 ```
-**Render Time:** 16.97 seconds
+**Render Time:** 16.90 seconds
 
 ![StandardShaderBall BubbleGum](gallery/shader_ball_bubblegum.jpg)
 
@@ -47,7 +48,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_glass.usda gallery\shader_ball_glass.jpg
 ```
-**Render Time:** 16.56 seconds
+**Render Time:** 16.64 seconds
 
 ![StandardShaderBall Glass](gallery/shader_ball_glass.jpg)
 
@@ -58,7 +59,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_gold.usda gallery\shader_ball_gold.jpg
 ```
-**Render Time:** 16.58 seconds
+**Render Time:** 16.61 seconds
 
 ![StandardShaderBall Gold](gallery/shader_ball_gold.jpg)
 
@@ -69,7 +70,7 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\pixar_kitchen.usda gallery\pixar_kitchen.jpg
 ```
-**Render Time:** 8.35 seconds
+**Render Time:** 8.80 seconds
 
 ![Pixar's KitchenSet](gallery/pixar_kitchen.jpg)
 
@@ -80,6 +81,6 @@ both intentional improvements and regressions as those paths evolve.
 ```cmd
 .\render_codex.bat --imageWidth 512 --purposes render --camera mono gallery\collectiveproject001.usda gallery\collectiveproject001.jpg
 ```
-**Render Time:** 13.36 seconds
+**Render Time:** 13.48 seconds
 
 ![Collective Project 001](gallery/collectiveproject001.jpg)

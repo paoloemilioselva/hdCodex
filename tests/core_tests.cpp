@@ -71,6 +71,8 @@ void TestVersionedScene()
     mesh.id = "/triangle";
     mesh.positions = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
     mesh.indices = {0, 1, 2};
+    mesh.materialId = "/base";
+    mesh.triangleMaterialIds = {"/subset"};
     mesh.displayColor = {0.2F, 0.4F, 0.8F};
     scene.UpsertMesh(mesh);
     const auto meshRevision = scene.Publish();
@@ -80,6 +82,9 @@ void TestVersionedScene()
     Require(snapshot->meshes.size() == 1, "scene snapshot lost mesh");
     Require(snapshot->meshes.front().indices.size() == 3,
             "scene snapshot lost indices");
+    Require(snapshot->meshes.front().triangleMaterialIds ==
+                std::vector<std::string>{"/subset"},
+            "scene snapshot lost triangle material assignments");
     Require(snapshot->meshes.front().displayColor[2] == 0.8F,
             "scene snapshot lost mesh display color");
 

@@ -4,6 +4,7 @@
 #include "render_param.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
+#include "pxr/imaging/hd/extComputationUtils.h"
 #include "pxr/imaging/hd/meshUtil.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
@@ -15,6 +16,7 @@
 #include "pxr/base/gf/vec3h.h"
 
 #include <array>
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -33,6 +35,38 @@ struct MeshNormals {
     VtIntArray indices;
     HdInterpolation interpolation{HdInterpolationConstant};
 };
+
+struct ComputedPrimvars {
+    HdExtComputationUtils::ValueStore values;
+    std::map<TfToken, HdInterpolation> interpolations;
+};
+
+ComputedPrimvars ReadComputedPrimvars(
+    HdSceneDelegate* sceneDelegate, const SdfPath& id)
+{
+    constexpr std::array interpolations = {
+        HdInterpolationFaceVarying,
+        HdInterpolationVertex,
+        HdInterpolationVarying,
+        HdInterpolationUniform,
+        HdInterpolationConstant,
+    };
+    HdExtComputationPrimvarDescriptorVector descriptors;
+    ComputedPrimvars result;
+    for (const HdInterpolation interpolation : interpolations) {
+        HdExtComputationPrimvarDescriptorVector found =
+            sceneDelegate->GetExtComputationPrimvarDescriptors(id, interpolation);
+        for (const HdExtComputationPrimvarDescriptor& descriptor : found) {
+            result.interpolations[descriptor.name] = interpolation;
+            descriptors.push_back(descriptor);
+        }
+    }
+    if (!descriptors.empty()) {
+        result.values = HdExtComputationUtils::GetComputedPrimvarValues(
+            descriptors, sceneDelegate);
+    }
+    return result;
+}
 
 VtVec2fArray ToVec2fArray(const VtValue& value)
 {
@@ -306,12 +340,21 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     bool visible = true;
     SdfPath materialId;
     SdfPath instancerId;
+    const bool primvarsDirty = HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id);
+    const bool normalsDirty = (*dirtyBits & HdChangeTracker::DirtyNormals) != 0;
+    const ComputedPrimvars computed = (primvarsDirty || normalsDirty)
+        ? ReadComputedPrimvars(sceneDelegate, id) : ComputedPrimvars{};
     {
         const std::scoped_lock lock(_mutex);
         if (HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->points)) {
-            const VtValue pointsValue = GetPoints(sceneDelegate);
-            if (pointsValue.IsHolding<VtVec3fArray>()) {
-                _points = pointsValue.UncheckedGet<VtVec3fArray>();
+            const auto computedPoints = computed.values.find(HdTokens->points);
+            VtVec3fArray synchronizedPoints = computedPoints != computed.values.end()
+                ? ToVec3fArray(computedPoints->second) : VtVec3fArray{};
+            if (synchronizedPoints.empty()) {
+                synchronizedPoints = ToVec3fArray(GetPoints(sceneDelegate));
+            }
+            if (!synchronizedPoints.empty()) {
+                _points = std::move(synchronizedPoints);
                 changed = true;
             }
         }
@@ -319,7 +362,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             _topology = GetMeshTopology(sceneDelegate);
             changed = true;
         }
-        if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
+        if (primvarsDirty) {
             if (const auto coordinates = ReadTextureCoordinates(sceneDelegate, id)) {
                 _texcoords = coordinates->values;
                 _texcoordIndices = coordinates->indices;
@@ -334,9 +377,19 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             _displayColor = colors.empty() ? GfVec3f(0.5F) : colors.front();
             changed = true;
         }
-        if ((*dirtyBits & HdChangeTracker::DirtyNormals) != 0 ||
-            HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-            if (const auto authoredNormals = ReadNormals(sceneDelegate, id)) {
+        if (normalsDirty || primvarsDirty) {
+            const auto computedNormals = computed.values.find(HdTokens->normals);
+            const VtVec3fArray synchronizedNormals =
+                computedNormals != computed.values.end()
+                ? ToVec3fArray(computedNormals->second) : VtVec3fArray{};
+            if (!synchronizedNormals.empty()) {
+                _normals = synchronizedNormals;
+                _normalIndices.clear();
+                const auto interpolation =
+                    computed.interpolations.find(HdTokens->normals);
+                _normalInterpolation = interpolation != computed.interpolations.end()
+                    ? interpolation->second : HdInterpolationVertex;
+            } else if (const auto authoredNormals = ReadNormals(sceneDelegate, id)) {
                 _normals = authoredNormals->values;
                 _normalIndices = authoredNormals->indices;
                 _normalInterpolation = authoredNormals->interpolation;
@@ -391,6 +444,36 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             HdMeshUtil(&topology, id).ComputeTriangleIndices(
                 &triangles, &primitiveParams);
 
+            const std::string baseMaterialId = materialId.GetString();
+            std::vector<std::string> faceMaterialIds(
+                topology.GetFaceVertexCounts().size(), baseMaterialId);
+            for (const HdGeomSubset& subset : topology.GetGeomSubsets()) {
+                if (subset.type != HdGeomSubset::TypeFaceSet ||
+                    subset.materialId.IsEmpty()) {
+                    continue;
+                }
+                for (const int face : subset.indices) {
+                    if (face >= 0 &&
+                        static_cast<std::size_t>(face) < faceMaterialIds.size()) {
+                        faceMaterialIds[static_cast<std::size_t>(face)] =
+                            subset.materialId.GetString();
+                    }
+                }
+            }
+            std::vector<std::string> triangleMaterialIds(
+                triangles.size(), baseMaterialId);
+            for (std::size_t triangleIndex = 0;
+                 triangleIndex < primitiveParams.size() &&
+                 triangleIndex < triangleMaterialIds.size(); ++triangleIndex) {
+                const int face = HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                    primitiveParams[triangleIndex]);
+                if (face >= 0 &&
+                    static_cast<std::size_t>(face) < faceMaterialIds.size()) {
+                    triangleMaterialIds[triangleIndex] =
+                        faceMaterialIds[static_cast<std::size_t>(face)];
+                }
+            }
+
             VtMatrix4dArray instanceTransforms;
             if (instancerId.IsEmpty()) {
                 instanceTransforms.push_back(GfMatrix4d(1.0));
@@ -426,7 +509,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
 
             hdcodex::SceneMesh mesh;
             mesh.id = id.GetString();
-            mesh.materialId = materialId.GetString();
+            mesh.materialId = baseMaterialId;
             mesh.displayColor = {
                 displayColor[0], displayColor[1], displayColor[2]};
             mesh.positions.reserve(points.size() * 3U * instanceTransforms.size());
@@ -454,6 +537,9 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                             static_cast<std::size_t>(triangle[component]) < points.size();
                     }
                     if (valid) {
+                        mesh.triangleMaterialIds.push_back(
+                            triangleIndex < triangleMaterialIds.size()
+                            ? triangleMaterialIds[triangleIndex] : baseMaterialId);
                         for (int component = 0; component < 3; ++component) {
                             mesh.indices.push_back(vertexBase +
                                 static_cast<std::uint32_t>(triangle[component]));
