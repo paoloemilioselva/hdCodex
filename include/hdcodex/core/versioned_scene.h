@@ -29,6 +29,8 @@ struct SceneMaterial {
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
     std::array<float, 3> transmissionColor{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> specularColor{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> coatColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> subsurfaceColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> subsurfaceRadius{1.0F, 0.2F, 0.1F};
     float metalness{0.0F};
@@ -37,6 +39,10 @@ struct SceneMaterial {
     float emissionWeight{0.0F};
     float transmission{0.0F};
     float indexOfRefraction{1.5F};
+    float specularWeight{1.0F};
+    float coat{0.0F};
+    float coatRoughness{0.1F};
+    float coatIndexOfRefraction{1.5F};
     float subsurface{0.0F};
     float subsurfaceScale{1.0F};
     bool thinWalled{false};
@@ -47,6 +53,11 @@ struct SceneMaterial {
     std::string opacityTexture;
     std::string normalTexture;
     std::string transmissionTexture;
+    std::string specularTexture;
+    std::string specularColorTexture;
+    std::string coatTexture;
+    std::string coatColorTexture;
+    std::string coatRoughnessTexture;
     std::string subsurfaceTexture;
     std::string subsurfaceColorTexture;
     std::string subsurfaceRadiusTexture;

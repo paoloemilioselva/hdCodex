@@ -39,9 +39,14 @@ struct GpuMaterial {
     vec4 subsurfaceWeightScale;
     vec4 subsurfaceColor;
     vec4 subsurfaceRadius;
+    vec4 specularWeightColor;
+    vec4 coatWeightRoughnessIor;
+    vec4 coatColor;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
+    uvec4 textureIndices3;
+    uvec4 textureIndices4;
 };
 layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial materials[]; };
 layout(std430, set = 0, binding = 7) readonly buffer TextureCoordinates { vec2 texcoords[]; };
@@ -83,6 +88,85 @@ vec3 cosineHemisphere(vec3 normal, inout uint state)
     return normalize(tangent * cos(r1) * r2s +
                      bitangent * sin(r1) * r2s +
                      normal * sqrt(1.0 - r2));
+}
+
+float luminance(vec3 value)
+{
+    return dot(value, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 f0)
+{
+    return f0 + (vec3(1.0) - f0) * pow(1.0 - clamp(cosTheta, 0.0, 1.0), 5.0);
+}
+
+float distributionGGX(float nDotH, float roughness)
+{
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denominator = nDotH * nDotH * (alpha2 - 1.0) + 1.0;
+    return alpha2 / max(3.14159265359 * denominator * denominator, 1e-6);
+}
+
+float geometrySchlickGGX(float nDotDirection, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = r * r * 0.125;
+    return nDotDirection / max(nDotDirection * (1.0 - k) + k, 1e-6);
+}
+
+vec3 evaluateGGX(vec3 normal, vec3 viewDirection, vec3 lightDirection,
+                 float roughness, vec3 f0)
+{
+    vec3 halfway = normalize(viewDirection + lightDirection);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float nDotH = max(dot(normal, halfway), 0.0);
+    float vDotH = max(dot(viewDirection, halfway), 0.0);
+    float distribution = distributionGGX(nDotH, roughness);
+    float geometry = geometrySchlickGGX(nDotV, roughness) *
+                     geometrySchlickGGX(nDotL, roughness);
+    vec3 fresnel = fresnelSchlick(vDotH, f0);
+    return distribution * geometry * fresnel /
+           max(4.0 * nDotV * nDotL, 1e-5);
+}
+
+vec3 sampleGGXReflection(vec3 incident, vec3 normal, float roughness,
+                         inout uint state)
+{
+    float alpha = max(roughness * roughness, 0.001);
+    float u1 = randomFloat(state);
+    float u2 = randomFloat(state);
+    float phi = 6.28318530718 * u1;
+    float cosTheta = sqrt((1.0 - u2) /
+        max(1.0 + (alpha * alpha - 1.0) * u2, 1e-6));
+    float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+    vec3 tangent = normalize(abs(normal.z) < 0.999
+        ? cross(normal, vec3(0.0, 0.0, 1.0))
+        : cross(normal, vec3(0.0, 1.0, 0.0)));
+    vec3 bitangent = cross(normal, tangent);
+    vec3 halfway = normalize(tangent * (cos(phi) * sinTheta) +
+                             bitangent * (sin(phi) * sinTheta) +
+                             normal * cosTheta);
+    vec3 reflected = reflect(incident, halfway);
+    return dot(reflected, normal) > 0.0
+        ? normalize(reflected) : normalize(reflect(incident, normal));
+}
+
+vec3 ggxSampleWeight(vec3 incident, vec3 outgoing, vec3 normal,
+                     float roughness, vec3 f0)
+{
+    vec3 viewDirection = normalize(-incident);
+    vec3 halfway = normalize(viewDirection + outgoing);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    float nDotL = max(dot(normal, outgoing), 0.0);
+    float nDotH = max(dot(normal, halfway), 0.0);
+    float vDotH = max(dot(viewDirection, halfway), 0.0);
+    if (nDotV <= 0.0 || nDotL <= 0.0 || nDotH <= 0.0) return vec3(0.0);
+    float geometry = geometrySchlickGGX(nDotV, roughness) *
+                     geometrySchlickGGX(nDotL, roughness);
+    return fresnelSchlick(vDotH, f0) * geometry * vDotH /
+           max(nDotV * nDotH, 1e-5);
 }
 
 vec3 environment(vec3 direction)
@@ -167,7 +251,8 @@ bool occluded(vec3 origin, vec3 direction)
     return rayQueryGetIntersectionTypeEXT(shadow, true) !=
         gl_RayQueryCommittedIntersectionNoneEXT;
 }
-
+)glsl"
+R"glsl(
 void main()
 {
     uvec2 pixel = gl_GlobalInvocationID.xy;
@@ -264,18 +349,59 @@ void main()
                                          subsurfaceRadius);
         vec3 diffuseColor = mix(baseColor,
             subsurfaceColor * subsurfaceAttenuation, subsurface);
+        float ior = max(material.transmissionOpacityIor.z, 1.0001);
+        float specularWeight = clamp(sampleMaterialTexture(
+            material.textureIndices3.x, surfaceUv,
+            vec4(material.specularWeightColor.x)).r, 0.0, 1.0);
+        vec3 specularColor = sampleMaterialTexture(
+            material.textureIndices3.y, surfaceUv,
+            vec4(material.specularWeightColor.yzw, 1.0)).rgb;
+        float dielectricReflectance = (ior - 1.0) / (ior + 1.0);
+        dielectricReflectance *= dielectricReflectance;
+        vec3 f0 = mix(clamp(vec3(dielectricReflectance * specularWeight) *
+                            specularColor, vec3(0.0), vec3(1.0)),
+                      baseColor, metalness);
+        float coat = clamp(sampleMaterialTexture(
+            material.textureIndices3.z, surfaceUv,
+            vec4(material.coatWeightRoughnessIor.x)).r, 0.0, 1.0);
+        vec3 coatColor = sampleMaterialTexture(
+            material.textureIndices3.w, surfaceUv,
+            vec4(material.coatColor.rgb, 1.0)).rgb;
+        float coatRoughness = clamp(sampleMaterialTexture(
+            material.textureIndices4.x, surfaceUv,
+            vec4(material.coatWeightRoughnessIor.y)).r, 0.02, 1.0);
+        float coatIor = max(material.coatWeightRoughnessIor.z, 1.0001);
+        float coatReflectance = (coatIor - 1.0) / (coatIor + 1.0);
+        coatReflectance *= coatReflectance;
+        vec3 coatF0 = clamp(vec3(coatReflectance) * coatColor,
+                            vec3(0.0), vec3(1.0));
 
         vec3 sunDirection = normalize(vec3(0.6, 0.85, 0.35));
+        vec3 viewDirection = normalize(-rayDirection);
+        float nDotL = max(dot(normal, sunDirection), 0.0);
         float wrappedNdotL = max((dot(normal, sunDirection) + 0.5 * subsurface) /
                                  (1.0 + 0.5 * subsurface), 0.0);
-        if (wrappedNdotL > 0.0 &&
+        if ((wrappedNdotL > 0.0 || nDotL > 0.0) &&
             !occluded(hit + orientedGeometricNormal * 0.002, sunDirection)) {
-            radiance += throughput * diffuseColor * vec3(1.1, 1.0, 0.9) *
-                wrappedNdotL * (1.0 - transmission);
+            vec3 halfway = normalize(viewDirection + sunDirection);
+            vec3 baseFresnel = fresnelSchlick(
+                max(dot(viewDirection, halfway), 0.0), f0);
+            vec3 diffuse = (vec3(1.0) - baseFresnel) * (1.0 - metalness) *
+                diffuseColor * (wrappedNdotL / 3.14159265359) *
+                (1.0 - transmission);
+            vec3 specular = nDotL * evaluateGGX(
+                normal, viewDirection, sunDirection, roughness, f0);
+            vec3 coatFresnel = fresnelSchlick(
+                max(dot(viewDirection, halfway), 0.0), coatF0);
+            vec3 coatSpecular = coat * nDotL * evaluateGGX(
+                normal, viewDirection, sunDirection, coatRoughness, coatF0);
+            vec3 direct = (vec3(1.0) - coat * coatFresnel) *
+                (diffuse + specular) + coatSpecular;
+            const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
+            radiance += throughput * direct * sunRadiance;
         }
 
         if (randomFloat(rng) < transmission) {
-            float ior = max(material.transmissionOpacityIor.z, 1.0001);
             float eta = frontFace ? 1.0 / ior : ior;
             float cosTheta = min(dot(-rayDirection, normal), 1.0);
             float r0 = (1.0 - ior) / (1.0 + ior);
@@ -294,14 +420,42 @@ void main()
             continue;
         }
 
-        throughput *= mix(diffuseColor, baseColor, metalness);
         rayOrigin = hit + orientedGeometricNormal * 0.002;
-        if (randomFloat(rng) < metalness) {
-            vec3 reflected = reflect(rayDirection, normal);
-            rayDirection = normalize(mix(reflected, cosineHemisphere(normal, rng),
-                                         roughness * roughness));
+        vec3 coatContribution = coat * fresnelSchlick(
+            max(dot(normal, viewDirection), 0.0), coatF0);
+        float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
+        if (coatProbability > 0.0 && randomFloat(rng) < coatProbability) {
+            vec3 incident = rayDirection;
+            rayDirection = sampleGGXReflection(
+                rayDirection, normal, coatRoughness, rng);
+            throughput *= coat * ggxSampleWeight(
+                incident, rayDirection, normal, coatRoughness, coatF0) /
+                coatProbability;
         } else {
-            rayDirection = cosineHemisphere(normal, rng);
+            throughput *= (vec3(1.0) - coatContribution) /
+                max(1.0 - coatProbability, 1e-4);
+            vec3 baseFresnel = fresnelSchlick(
+                max(dot(normal, viewDirection), 0.0), f0);
+            vec3 specularContribution = baseFresnel;
+            vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
+                (1.0 - metalness) * diffuseColor;
+            float specularEnergy = luminance(specularContribution);
+            float diffuseEnergy = luminance(diffuseContribution);
+            float specularProbability = clamp(
+                specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
+                0.05, 0.95);
+            if (randomFloat(rng) < specularProbability) {
+                vec3 incident = rayDirection;
+                rayDirection = sampleGGXReflection(
+                    rayDirection, normal, roughness, rng);
+                throughput *= ggxSampleWeight(
+                    incident, rayDirection, normal, roughness, f0) /
+                    specularProbability;
+            } else {
+                throughput *= diffuseContribution /
+                    max(1.0 - specularProbability, 1e-4);
+                rayDirection = cosineHemisphere(normal, rng);
+            }
         }
         if (bounce >= 2) {
             float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
@@ -337,9 +491,14 @@ struct GpuMaterial {
     std::array<float, 4> subsurfaceWeightScale;
     std::array<float, 4> subsurfaceColor;
     std::array<float, 4> subsurfaceRadius;
+    std::array<float, 4> specularWeightColor;
+    std::array<float, 4> coatWeightRoughnessIor;
+    std::array<float, 4> coatColor;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
+    std::array<std::uint32_t, 4> textureIndices3;
+    std::array<std::uint32_t, 4> textureIndices4;
 };
 
 struct GpuTexcoord { float u, v; };
@@ -699,8 +858,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.v5";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v2";
+        options.generatorVersion = "hdCodex.pathtracer.v6";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v3";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -815,6 +974,11 @@ public:
             {0.0F, 1.0F, 0.0F, 0.0F},
             {0.8F, 0.8F, 0.8F, 0.0F},
             {1.0F, 0.2F, 0.1F, 0.0F},
+            {1.0F, 1.0F, 1.0F, 1.0F},
+            {0.0F, 0.1F, 1.5F, 0.0F},
+            {1.0F, 1.0F, 1.0F, 0.0F},
+            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
+            {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
             {kMissingTexture, kMissingTexture, kMissingTexture, kMissingTexture},
@@ -837,6 +1001,12 @@ public:
                  material.subsurfaceColor[2], 0.0F},
                 {material.subsurfaceRadius[0], material.subsurfaceRadius[1],
                  material.subsurfaceRadius[2], 0.0F},
+                {material.specularWeight, material.specularColor[0],
+                 material.specularColor[1], material.specularColor[2]},
+                {material.coat, material.coatRoughness,
+                 material.coatIndexOfRefraction, 0.0F},
+                {material.coatColor[0], material.coatColor[1],
+                 material.coatColor[2], 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
@@ -847,6 +1017,12 @@ public:
                 {textureIndex(material.subsurfaceTexture),
                  textureIndex(material.subsurfaceColorTexture),
                  textureIndex(material.subsurfaceRadiusTexture), kMissingTexture},
+                {textureIndex(material.specularTexture),
+                 textureIndex(material.specularColorTexture),
+                 textureIndex(material.coatTexture),
+                 textureIndex(material.coatColorTexture)},
+                {textureIndex(material.coatRoughnessTexture),
+                 kMissingTexture, kMissingTexture, kMissingTexture},
             });
         }
         for (const SceneMesh& mesh : snapshot->meshes) {

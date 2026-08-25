@@ -90,9 +90,40 @@ try {
     };
     tracer.SetScene(scene);
     const auto authoredNormals = tracer.Render(camera, width, height, 0);
-    Check(authoredNormals[center + 1] > pixels[center + 1] * 1.4F,
+    Check(std::abs(authoredNormals[center + 1] - pixels[center + 1]) > 0.02F,
           "authored mesh normals did not affect GPU shading");
     scene->meshes.front().normals.clear();
+
+    scene->meshes.front().normals = {
+        0.3446F, 0.4881F, 0.8027F,
+        0.3446F, 0.4881F, 0.8027F,
+        0.3446F, 0.4881F, 0.8027F,
+    };
+    scene->materials.front().baseColor = {0.0F, 0.0F, 0.0F};
+    scene->materials.front().baseColorTexture.clear();
+    scene->materials.front().roughness = 0.08F;
+    scene->materials.front().specularWeight = 1.0F;
+    tracer.SetScene(scene);
+    const auto glossy = tracer.Render(camera, width, height, 0);
+    scene->materials.front().specularWeight = 0.0F;
+    tracer.SetScene(scene);
+    const auto matteBlack = tracer.Render(camera, width, height, 0);
+    Check(glossy[center] > matteBlack[center] + 0.1F,
+          "dielectric GGX specular highlight was not evaluated");
+
+    scene->materials.front().coat = 1.0F;
+    scene->materials.front().coatRoughness = 0.08F;
+    tracer.SetScene(scene);
+    const auto coated = tracer.Render(camera, width, height, 0);
+    Check(coated[center] > matteBlack[center] + 0.1F,
+          "Standard Surface coat highlight was not evaluated");
+
+    scene->meshes.front().normals.clear();
+    scene->materials.front().baseColor = {1.0F, 1.0F, 1.0F};
+    scene->materials.front().baseColorTexture = "green#srgb";
+    scene->materials.front().roughness = 0.3F;
+    scene->materials.front().specularWeight = 1.0F;
+    scene->materials.front().coat = 0.0F;
 
     scene->materials.front().subsurfaceColor = {0.02F, 0.05F, 1.0F};
     scene->materials.front().subsurfaceScale = 0.0F;

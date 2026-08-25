@@ -276,6 +276,16 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             node, "transmission_color", material.transmissionColor);
         material.indexOfRefraction = FloatParameter(
             node, "specular_IOR", material.indexOfRefraction);
+        material.specularWeight = FloatParameter(
+            node, "specular", material.specularWeight);
+        material.specularColor = ColorParameter(
+            node, "specular_color", material.specularColor);
+        material.coat = FloatParameter(node, "coat", material.coat);
+        material.coatColor = ColorParameter(node, "coat_color", material.coatColor);
+        material.coatRoughness = FloatParameter(
+            node, "coat_roughness", material.coatRoughness);
+        material.coatIndexOfRefraction = FloatParameter(
+            node, "coat_IOR", material.coatIndexOfRefraction);
         material.thinWalled = BoolParameter(node, "thin_walled", material.thinWalled);
         material.subsurface = FloatParameter(node, "subsurface", material.subsurface);
         material.subsurfaceColor = ColorParameter(
@@ -298,6 +308,16 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             scene, TextureForInput(network, node, "normal"), false);
         material.transmissionTexture = LoadTexture(
             scene, TextureForInput(network, node, "transmission_color"), true);
+        material.specularTexture = LoadTexture(
+            scene, TextureForInput(network, node, "specular"), false);
+        material.specularColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "specular_color"), true);
+        material.coatTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat"), false);
+        material.coatColorTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat_color"), true);
+        material.coatRoughnessTexture = LoadTexture(
+            scene, TextureForInput(network, node, "coat_roughness"), false);
         material.subsurfaceTexture = LoadTexture(
             scene, TextureForInput(network, node, "subsurface"), false);
         material.subsurfaceColorTexture = LoadTexture(
