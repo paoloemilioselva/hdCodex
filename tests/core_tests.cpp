@@ -147,6 +147,25 @@ void TestSceneDeduplicatesDecodedTextures()
             "HDR light texture was clamped");
 }
 
+void TestScenePublishesLights()
+{
+    hdcodex::VersionedScene scene;
+    hdcodex::SceneLight dome;
+    dome.id = "/environment";
+    dome.type = hdcodex::SceneLightType::Dome;
+    dome.intensity = 2.0F;
+    dome.texture = "studio.exr#auto-hdr";
+    scene.UpsertLight(dome);
+    (void)scene.Publish();
+    const auto snapshot = scene.Snapshot();
+    Require(snapshot->lights.size() == 1, "light was not published");
+    Require(snapshot->lights.front().texture == dome.texture,
+            "light texture binding changed");
+    scene.RemoveLight(dome.id);
+    (void)scene.Publish();
+    Require(scene.Snapshot()->lights.empty(), "removed light remained published");
+}
+
 } // namespace
 
 int main()
@@ -157,6 +176,7 @@ int main()
         TestVersionedScene();
         TestSceneCarriesFaceCornerTextureCoordinates();
         TestSceneDeduplicatesDecodedTextures();
+        TestScenePublishesLights();
         std::cout << "hdCodex core tests passed\n";
         return 0;
     } catch (const std::exception& error) {

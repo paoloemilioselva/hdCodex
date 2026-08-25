@@ -75,11 +75,65 @@ struct SceneTexture {
     std::vector<float> rgbaFloat;
 };
 
+enum class SceneLightType : std::uint32_t {
+    Dome,
+    Rect,
+};
+
+enum class DomeTextureFormat : std::uint32_t {
+    Automatic,
+    LatLong,
+    MirroredBall,
+    Angular,
+    CubeMapVerticalCross,
+};
+
+struct SceneLight {
+    std::string id;
+    SceneLightType type{SceneLightType::Dome};
+    bool visible{true};
+    std::array<float, 3> color{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> temperatureColor{1.0F, 1.0F, 1.0F};
+    float intensity{1.0F};
+    float exposure{0.0F};
+    float diffuse{1.0F};
+    float specular{1.0F};
+    bool normalize{false};
+
+    std::string texture;
+    DomeTextureFormat textureFormat{DomeTextureFormat::Automatic};
+
+    /// Orthonormal local axes in world space. Dome maps world directions back
+    /// through these axes; Rect uses basisZ as its emitting (-Z) direction.
+    std::array<float, 3> basisX{1.0F, 0.0F, 0.0F};
+    std::array<float, 3> basisY{0.0F, 1.0F, 0.0F};
+    std::array<float, 3> basisZ{0.0F, 0.0F, 1.0F};
+    std::array<float, 3> position{0.0F, 0.0F, 0.0F};
+    /// Full world-space edge vectors for the authored RectLight dimensions.
+    std::array<float, 3> axisU{1.0F, 0.0F, 0.0F};
+    std::array<float, 3> axisV{0.0F, 1.0F, 0.0F};
+    float width{1.0F};
+    float height{1.0F};
+    float area{1.0F};
+
+    float shapingFocus{0.0F};
+    std::array<float, 3> shapingFocusTint{0.0F, 0.0F, 0.0F};
+    float shapingConeAngle{180.0F};
+    float shapingConeSoftness{0.0F};
+
+    bool shadowEnable{true};
+    std::array<float, 3> shadowColor{0.0F, 0.0F, 0.0F};
+    float shadowDistance{-1.0F};
+    float shadowFalloff{-1.0F};
+    float shadowFalloffGamma{1.0F};
+};
+
 struct SceneSnapshot {
     std::uint64_t revision{0};
     std::vector<SceneMesh> meshes;
     std::vector<SceneMaterial> materials;
     std::vector<SceneTexture> textures;
+    std::vector<SceneLight> lights;
 };
 
 /// Tracks staging and published scene revisions without exposing Hydra types to
@@ -123,6 +177,11 @@ public:
         for (const auto& [id, texture] : _textures) {
             (void)id;
             snapshot->textures.push_back(texture);
+        }
+        snapshot->lights.reserve(_lights.size());
+        for (const auto& [id, light] : _lights) {
+            (void)id;
+            snapshot->lights.push_back(light);
         }
         _snapshot = std::move(snapshot);
         _published.store(revision, std::memory_order_release);
@@ -174,6 +233,20 @@ public:
         (void)MarkDirty();
     }
 
+    void UpsertLight(SceneLight light)
+    {
+        if (light.id.empty()) return;
+        const std::scoped_lock lock(_mutex);
+        _lights[light.id] = std::move(light);
+        (void)MarkDirty();
+    }
+
+    void RemoveLight(const std::string& id)
+    {
+        const std::scoped_lock lock(_mutex);
+        if (_lights.erase(id) != 0U) (void)MarkDirty();
+    }
+
     [[nodiscard]] std::shared_ptr<const SceneSnapshot> Snapshot() const
     {
         const std::scoped_lock lock(_mutex);
@@ -187,6 +260,7 @@ private:
     std::map<std::string, SceneMesh, std::less<>> _meshes;
     std::map<std::string, SceneMaterial, std::less<>> _materials;
     std::map<std::string, SceneTexture, std::less<>> _textures;
+    std::map<std::string, SceneLight, std::less<>> _lights;
     std::shared_ptr<const SceneSnapshot> _snapshot =
         std::make_shared<const SceneSnapshot>();
 };

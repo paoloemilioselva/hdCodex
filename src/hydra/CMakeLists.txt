@@ -1,6 +1,7 @@
 add_library(hdCodex SHARED
   camera.cpp
   instancer.cpp
+  light.cpp
   material.cpp
   mesh.cpp
   render_buffer.cpp
@@ -19,6 +20,7 @@ target_link_libraries(hdCodex
     hdx
     usdImaging
     usdShade
+    usdLux
     hio
 )
 target_include_directories(hdCodex PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

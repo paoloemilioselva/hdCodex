@@ -2,6 +2,7 @@
 
 #include "camera.h"
 #include "instancer.h"
+#include "light.h"
 #include "material.h"
 #include "mesh.h"
 #include "render_buffer.h"
@@ -24,6 +25,8 @@ const TfTokenVector SupportedRprims = {HdPrimTypeTokens->mesh};
 const TfTokenVector SupportedSprims = {
     HdPrimTypeTokens->camera,
     HdPrimTypeTokens->material,
+    HdPrimTypeTokens->domeLight,
+    HdPrimTypeTokens->rectLight,
 };
 const TfTokenVector SupportedBprims = {HdPrimTypeTokens->renderBuffer};
 
@@ -107,6 +110,10 @@ HdSprim* HdCodexRenderDelegate::CreateSprim(const TfToken& typeId, const SdfPath
     if (typeId == HdPrimTypeTokens->material) {
         return new HdCodexMaterial(sprimId);
     }
+    if (typeId == HdPrimTypeTokens->domeLight ||
+        typeId == HdPrimTypeTokens->rectLight) {
+        return new HdCodexLight(sprimId, typeId);
+    }
     return nullptr;
 }
 
@@ -119,6 +126,9 @@ void HdCodexRenderDelegate::DestroySprim(HdSprim* sprim)
 {
     if (dynamic_cast<HdCodexMaterial*>(sprim)) {
         _scene.RemoveMaterial(sprim->GetId().GetString());
+    }
+    if (dynamic_cast<HdCodexLight*>(sprim)) {
+        _scene.RemoveLight(sprim->GetId().GetString());
     }
     delete sprim;
 }
