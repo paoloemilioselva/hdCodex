@@ -83,6 +83,10 @@ try {
     const auto progressive = tracer.Render(camera, width, height, 1);
     Check(progressive.size() == pixels.size(), "progressive image size changed");
 
+    const auto interactive = tracer.Render(camera, width / 2U, height / 2U, 0U, 2U);
+    Check(interactive.size() == width * height,
+          "reduced-resolution interactive render size is incorrect");
+
     scene->meshes.front().normals = {
         0.6F, 0.85F, 0.35F,
         0.6F, 0.85F, 0.35F,

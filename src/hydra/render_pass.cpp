@@ -9,6 +9,7 @@
 #include "pxr/base/tf/diagnostic.h"
 
 #include <algorithm>
+#include <span>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -35,6 +36,31 @@ hdcodex::PathTracerCamera MakeCamera(const HdRenderPassStateSharedPtr& state)
         .vertical = {static_cast<float>(vertical[0]), static_cast<float>(vertical[1]),
                      static_cast<float>(vertical[2])},
     };
+}
+
+std::vector<float> UpscaleNearest(
+    std::span<const float> source,
+    unsigned int sourceWidth,
+    unsigned int sourceHeight,
+    unsigned int width,
+    unsigned int height)
+{
+    std::vector<float> result(static_cast<std::size_t>(width) * height * 4U);
+    for (unsigned int y = 0; y < height; ++y) {
+        const unsigned int sourceY = std::min(
+            sourceHeight - 1U, y * sourceHeight / height);
+        for (unsigned int x = 0; x < width; ++x) {
+            const unsigned int sourceX = std::min(
+                sourceWidth - 1U, x * sourceWidth / width);
+            const std::size_t sourceOffset =
+                (static_cast<std::size_t>(sourceY) * sourceWidth + sourceX) * 4U;
+            const std::size_t destinationOffset =
+                (static_cast<std::size_t>(y) * width + x) * 4U;
+            std::copy_n(source.data() + sourceOffset, 4U,
+                        result.data() + destinationOffset);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -87,8 +113,9 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
 
     const unsigned int width = colorBuffer->GetWidth();
     const unsigned int height = colorBuffer->GetHeight();
+    const bool cameraChanged = _hasCamera && !(camera == _lastCamera);
     const bool reset = _lastRevision != revision || !_hasCamera ||
-        !(camera == _lastCamera) || width != _lastWidth || height != _lastHeight;
+        cameraChanged || width != _lastWidth || height != _lastHeight;
     if (reset) {
         try {
             if (_lastRevision != revision) _pathTracer->SetScene(_scene->Snapshot());
@@ -99,7 +126,26 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
         }
     }
 
-    if (_pathTracer->HasGeometry() && width > 0 && height > 0 && _sampleIndex < targetSamples) {
+    const bool interactive = cameraChanged && _lastRevision == revision &&
+        width == _lastWidth && height == _lastHeight;
+    if (_pathTracer->HasGeometry() && width > 0 && height > 0 && interactive) {
+        try {
+            constexpr unsigned int interactiveScale = 2U;
+            constexpr unsigned int interactiveBounces = 2U;
+            const unsigned int traceWidth = std::max(
+                1U, (width + interactiveScale - 1U) / interactiveScale);
+            const unsigned int traceHeight = std::max(
+                1U, (height + interactiveScale - 1U) / interactiveScale);
+            colorBuffer->WriteFloat4(UpscaleNearest(
+                _pathTracer->Render(camera, traceWidth, traceHeight, 0U,
+                                    interactiveBounces),
+                traceWidth, traceHeight, width, height));
+        } catch (const std::exception& error) {
+            TF_WARN("hdCodex interactive Vulkan path trace failed: %s", error.what());
+            colorBuffer->Clear(colorBinding->clearValue);
+        }
+    } else if (_pathTracer->HasGeometry() && width > 0 && height > 0 &&
+               _sampleIndex < targetSamples) {
         try {
             colorBuffer->WriteFloat4(
                 _pathTracer->Render(camera, width, height, _sampleIndex));

@@ -19,6 +19,7 @@ namespace {
 
 constexpr std::uint32_t kMaxMaterialTextures = 256U;
 constexpr std::uint32_t kMissingTexture = UINT32_MAX;
+constexpr std::uint32_t kMaxPathBounces = 5U;
 constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
 
 constexpr auto kPathTracerSource = R"glsl(
@@ -271,7 +272,8 @@ void main()
     vec3 throughput = vec3(1.0);
     vec3 radiance = vec3(0.0);
 
-    for (int bounce = 0; bounce < 5; ++bounce)
+    int maxBounces = int(clamp(camera.frame.w & 0xffu, 1u, 5u));
+    for (int bounce = 0; bounce < maxBounces; ++bounce)
     {
         rayQueryEXT query;
         uint rayFlags = (camera.frame.w & 0x100u) != 0u
@@ -1269,7 +1271,8 @@ public:
     }
 
     std::vector<float> Trace(const PathTracerCamera& camera, std::uint32_t width,
-                             std::uint32_t height, std::uint32_t sample)
+                             std::uint32_t height, std::uint32_t sample,
+                             std::uint32_t maxBounces)
     {
         if (!geometryReady || width == 0 || height == 0) return {};
         EnsureOutput(width, height);
@@ -1278,7 +1281,9 @@ public:
             {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2], 0.0F},
             {camera.horizontal[0], camera.horizontal[1], camera.horizontal[2], 0.0F},
             {camera.vertical[0], camera.vertical[1], camera.vertical[2], 0.0F},
-            {width, height, sample, sceneOpaque ? kOpaqueSceneFlag : 0U},
+            {width, height, sample,
+             std::clamp(maxBounces, 1U, kMaxPathBounces) |
+                 (sceneOpaque ? kOpaqueSceneFlag : 0U)},
         };
         std::memcpy(uniform.mapped, &data, sizeof(data));
         Submit([&](VkCommandBuffer command) {
@@ -1337,9 +1342,9 @@ void VulkanPathTracer::SetScene(const std::shared_ptr<const SceneSnapshot>& scen
 }
 std::vector<float> VulkanPathTracer::Render(
     const PathTracerCamera& camera, std::uint32_t width, std::uint32_t height,
-    std::uint32_t sampleIndex)
+    std::uint32_t sampleIndex, std::uint32_t maxBounces)
 {
-    return _impl->Trace(camera, width, height, sampleIndex);
+    return _impl->Trace(camera, width, height, sampleIndex, maxBounces);
 }
 bool VulkanPathTracer::HasGeometry() const noexcept { return _impl->geometryReady; }
 

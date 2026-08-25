@@ -37,7 +37,8 @@ public:
         const PathTracerCamera& camera,
         std::uint32_t width,
         std::uint32_t height,
-        std::uint32_t sampleIndex);
+        std::uint32_t sampleIndex,
+        std::uint32_t maxBounces = 5U);
 
     [[nodiscard]] bool HasGeometry() const noexcept;
 
