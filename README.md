@@ -173,3 +173,7 @@ The images in `gallery/` are checked-in visual baselines. They cover:
 Run the command printed beside each image in `gallery.md`, record wall time, and
 commit both the changed images and timing table whenever an intentional renderer
 change affects output.
+
+## License
+
+hdCodex is available under the [MIT License](LICENSE).
