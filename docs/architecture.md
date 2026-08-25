@@ -58,9 +58,10 @@ vendor RT hardware. The current implementation flattens visible world-space
 meshes into one BLAS and builds a one-instance TLAS whenever the published scene
 changes. Accumulation resets for scene, camera, or output-size changes.
 
-The initial integrator traces up to five diffuse bounces, samples an analytic
-sky, performs explicit sun shadow queries, accumulates one stochastic sample
-per Hydra execute, and converges at 64 samples. Scene or camera changes reset
+The integrator traces up to five bounces, samples an analytic sky, performs
+explicit sun shadow queries, and evaluates Lambert diffuse plus dielectric,
+metal, and layered-coat GGX reflection. It accumulates one stochastic sample per
+Hydra execute and converges at 64 samples. Scene or camera changes reset
 accumulation. Geometry is flattened into one world-space BLAS for this first
 functional path; per-mesh BLAS caching and TLAS instance updates remain a
 performance optimization.
@@ -81,7 +82,9 @@ face-corner order and applies the inverse-transpose of each mesh/instance world
 transform. The compute shader barycentrically interpolates these shading
 normals, keeps the geometric triangle normal for facing and ray offsets, and
 then applies any tangent-space material normal map. Missing or invalid authored
-normals fall back to faceted geometric normals.
+normals are generated as smooth vertex normals using public `Hd_VertexAdjacency`
+and `Hd_SmoothNormals` APIs. Degenerate triangles retain the geometric normal as
+the final shader fallback.
 
 ## MaterialX compilation
 
@@ -109,20 +112,30 @@ distribution moves to a MaterialX version with the corrected generator.
 
 The GPU BSDF binding supports constant and image-driven `standard_surface` and
 Preview Surface base color, metalness, specular roughness, emission, opacity,
-tangent-space normals, and transmission. Indexed and face-varying UVs are
-triangulated in face-corner order. Images are normalized to RGBA8, uploaded as
-sRGB or raw Vulkan images, and accessed through a partially-bound descriptor
-array currently capped at 256 textures. Opacity participates in primary and
-shadow ray-query candidate confirmation. Transmission supports color,
-IOR/Fresnel refraction, and thin-walled surfaces. Standard Surface subsurface
-weight, color, radius, and scale are lowered to a realtime attenuation and
-wrapped-diffuse approximation; this is not yet a random-walk BSSRDF.
+tangent-space normals, transmission, dielectric specular, and Standard Surface
+coat. Indexed and face-varying UVs are triangulated in face-corner order. Images
+are normalized to RGBA8, uploaded as sRGB or raw Vulkan images, and accessed
+through a partially-bound descriptor array currently capped at 256 textures.
+Opacity participates in primary and shadow ray-query candidate confirmation.
+Transmission supports color, IOR/Fresnel refraction, and thin-walled surfaces.
+Specular and coat use energy-partitioned GGX lobes for direct and indirect
+lighting. Standard Surface subsurface weight, color, radius, and scale are
+lowered to a realtime attenuation and wrapped-diffuse approximation; this is
+not yet a random-walk BSSRDF.
 
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute
 shader, so hdCodex separately lowers the supported graph subset into its compute
-ABI. Arbitrary procedural nodes, UDIMs, texture transforms, coat, sheen, a full
-BSSRDF, and a general MaterialX-to-path-tracer callable ABI are not implemented.
+ABI. Arbitrary procedural nodes, UDIMs, texture transforms, sheen, a full BSSRDF,
+and a general MaterialX-to-path-tracer callable ABI are not implemented.
+
+## Subdivision surfaces
+
+Subdivision meshes are currently rendered from their coarse polygon topology.
+The planned implementation uses only public `HdMeshTopology`, `PxOsd`, and
+OpenSubdiv APIs, with cached uniform refinement first and GPU stencil evaluation
+later. See [Subdivision plan](subdivision-plan.md) for the data model, correctness
+requirements, tests, and performance phases.
 
 ## Threading
 

@@ -22,17 +22,20 @@ public Hydra APIs, including per-instance translation, rotation, scale, and
 matrix primvars. MaterialX modules are compiled and retained by Hydra materials;
 the GPU path integrator evaluates constant and image-driven
 `standard_surface`/Preview Surface base color, metalness, roughness, emission,
-opacity, tangent-space normals, transmission, and the Standard Surface
-subsurface inputs. Hydra face-varying/indexed UV seams are preserved, Hio
+opacity, tangent-space normals, transmission, dielectric/metal GGX specular,
+Standard Surface coat, and the Standard Surface subsurface inputs. Hydra
+face-varying/indexed UV seams are preserved, Hio
 decodes source images, and a partially-bound Vulkan descriptor array provides
 sRGB-aware texture sampling. Authored mesh `normals` and `primvars:normals`
 follow Hydra's precedence rules and support indexed constant, uniform, vertex,
 varying, and face-varying interpolation. Normals are transformed correctly for
-non-uniformly scaled meshes and instances before GPU interpolation.
+non-uniformly scaled meshes and instances before GPU interpolation. When a mesh
+does not author normals, the adapter generates smooth vertex normals from Hydra's
+public adjacency and smooth-normal utilities.
 
 The supported graph subset follows direct image connections (including a
 `normalmap` node) into the surface. General MaterialX procedural graphs, UDIMs,
-texture transforms, coat, sheen, a random-walk BSSRDF, and direct callable
+texture transforms, sheen, a random-walk BSSRDF, and direct callable
 integration of generated MaterialX functions remain future work. The current
 subsurface implementation is a realtime diffusion approximation. Generated
 Vulkan raster stages are compiled and cached, but cannot be invoked directly
@@ -40,7 +43,8 @@ from the compute path tracer; supported inputs are lowered into hdCodex's
 compute material ABI.
 
 See [Architecture](docs/architecture.md) for boundaries and implementation
-phases, and [Building](docs/building.md) for local dependency setup.
+phases, [Subdivision plan](docs/subdivision-plan.md) for the staged OpenSubdiv
+integration, and [Building](docs/building.md) for local dependency setup.
 
 ## Quick start
 
