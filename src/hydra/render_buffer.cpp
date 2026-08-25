@@ -118,6 +118,10 @@ void HdCodexRenderBuffer::WriteFloat4(std::span<const float> rgba)
         throw std::invalid_argument("render buffer input does not match dimensions");
     }
     const std::scoped_lock lock(_mutex);
+    if (_format == HdFormatFloat32Vec4) {
+        std::memcpy(_display.data(), rgba.data(), rgba.size_bytes());
+        return;
+    }
     const std::size_t pixelSize = HdDataSizeOfFormat(_format);
     for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
         WritePixel(_format, _display.data() + pixel * pixelSize, rgba.data() + pixel * 4U);

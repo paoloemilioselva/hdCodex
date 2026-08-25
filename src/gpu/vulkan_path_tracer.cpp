@@ -554,6 +554,7 @@ public:
           queueFamily(context.ComputeQueueFamily())
     {
         CreateCommandPool();
+        CreateSubmissionResources();
         CreateSampler();
         CreateDescriptors();
         CreatePipeline(cache);
@@ -567,12 +568,14 @@ public:
         vkDeviceWaitIdle(device);
         DestroyScene();
         DestroyBuffer(output);
+        DestroyBuffer(readback);
         DestroyBuffer(uniform);
         if (textureSampler) vkDestroySampler(device, textureSampler, nullptr);
         if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
         if (pipelineLayout) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         if (descriptorPool) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         if (descriptorLayout) vkDestroyDescriptorSetLayout(device, descriptorLayout, nullptr);
+        if (submissionFence) vkDestroyFence(device, submissionFence, nullptr);
         if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
     }
 
@@ -762,14 +765,10 @@ public:
 
     void Submit(const std::function<void(VkCommandBuffer)>& record)
     {
-        const VkCommandBufferAllocateInfo allocate{
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = commandPool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        VkCommandBuffer command = VK_NULL_HANDLE;
-        Check(vkAllocateCommandBuffers(device, &allocate, &command), "vkAllocateCommandBuffers");
+        Check(vkWaitForFences(device, 1, &submissionFence, VK_TRUE, UINT64_MAX),
+              "vkWaitForFences");
+        Check(vkResetFences(device, 1, &submissionFence), "vkResetFences");
+        Check(vkResetCommandBuffer(command, 0), "vkResetCommandBuffer");
         const VkCommandBufferBeginInfo begin{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -782,19 +781,38 @@ public:
             .commandBufferCount = 1,
             .pCommandBuffers = &command,
         };
-        Check(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE), "vkQueueSubmit");
-        Check(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
-        vkFreeCommandBuffers(device, commandPool, 1, &command);
+        Check(vkQueueSubmit(queue, 1, &submit, submissionFence), "vkQueueSubmit");
+        Check(vkWaitForFences(device, 1, &submissionFence, VK_TRUE, UINT64_MAX),
+              "vkWaitForFences");
     }
 
     void CreateCommandPool()
     {
         const VkCommandPoolCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                     VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             .queueFamilyIndex = queueFamily,
         };
         Check(vkCreateCommandPool(device, &info, nullptr, &commandPool), "vkCreateCommandPool");
+    }
+
+    void CreateSubmissionResources()
+    {
+        const VkCommandBufferAllocateInfo allocate{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        Check(vkAllocateCommandBuffers(device, &allocate, &command),
+              "vkAllocateCommandBuffers");
+        const VkFenceCreateInfo fenceInfo{
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+        Check(vkCreateFence(device, &fenceInfo, nullptr, &submissionFence),
+              "vkCreateFence");
     }
 
     void CreateSampler()
@@ -1228,9 +1246,29 @@ public:
         if (output.size == required) return;
         vkDeviceWaitIdle(device);
         DestroyBuffer(output);
-        output = CreateBuffer(required, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        DestroyBuffer(readback);
+        output = CreateBuffer(required,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false);
+        readback = CreateBuffer(required, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
-        std::memset(output.mapped, 0, static_cast<std::size_t>(required));
+        Submit([&](VkCommandBuffer currentCommand) {
+            vkCmdFillBuffer(currentCommand, output.handle, 0, output.size, 0U);
+            const VkBufferMemoryBarrier toShader{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = output.handle,
+                .offset = 0,
+                .size = output.size,
+            };
+            vkCmdPipelineBarrier(currentCommand, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                1, &toShader, 0, nullptr);
+        });
         UpdateDescriptors();
     }
 
@@ -1310,20 +1348,54 @@ public:
         };
         std::memcpy(uniform.mapped, &data, sizeof(data));
         Submit([&](VkCommandBuffer command) {
+            const VkBufferMemoryBarrier toShader{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = output.handle,
+                .offset = 0,
+                .size = output.size,
+            };
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                1, &toShader, 0, nullptr);
             vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                 pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             vkCmdDispatch(command, (width + 7U) / 8U, (height + 7U) / 8U, 1);
-            const VkMemoryBarrier barrier{
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            const VkBufferMemoryBarrier toTransfer{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
                 .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = output.handle,
+                .offset = 0,
+                .size = output.size,
             };
             vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                1, &toTransfer, 0, nullptr);
+            const VkBufferCopy copy{.size = output.size};
+            vkCmdCopyBuffer(command, output.handle, readback.handle, 1, &copy);
+            const VkBufferMemoryBarrier toHost{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .buffer = readback.handle,
+                .offset = 0,
+                .size = readback.size,
+            };
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
+                1, &toHost, 0, nullptr);
         });
         std::vector<float> pixels(static_cast<std::size_t>(width) * height * 4U);
-        std::memcpy(pixels.data(), output.mapped, pixels.size() * sizeof(float));
+        std::memcpy(pixels.data(), readback.mapped, pixels.size() * sizeof(float));
         return pixels;
     }
 
@@ -1332,6 +1404,8 @@ public:
     VkQueue queue{VK_NULL_HANDLE};
     std::uint32_t queueFamily{0};
     VkCommandPool commandPool{VK_NULL_HANDLE};
+    VkCommandBuffer command{VK_NULL_HANDLE};
+    VkFence submissionFence{VK_NULL_HANDLE};
     VkDescriptorSetLayout descriptorLayout{VK_NULL_HANDLE};
     VkDescriptorPool descriptorPool{VK_NULL_HANDLE};
     VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
@@ -1340,6 +1414,7 @@ public:
     VkSampler textureSampler{VK_NULL_HANDLE};
     Buffer uniform;
     Buffer output;
+    Buffer readback;
     Buffer vertexBuffer;
     Buffer indexBuffer;
     Buffer instanceBuffer;
