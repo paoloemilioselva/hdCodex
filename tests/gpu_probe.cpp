@@ -19,6 +19,11 @@ int main()
             return 1;
         }
         hdcodex::VulkanContext context;
+        if (context.RenderQueueFamily() != context.ComputeQueueFamily() ||
+            context.RenderQueueHandle() != context.ComputeQueueHandle()) {
+            std::cerr << "Vulkan render queue aliases are inconsistent\n";
+            return 1;
+        }
         std::cout << "Selected: " << context.DeviceInfo().name << '\n';
         return 0;
     } catch (const std::exception& error) {
@@ -26,4 +31,3 @@ int main()
         return 1;
     }
 }
-

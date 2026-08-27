@@ -115,18 +115,21 @@ void Check(VkResult result, const char* operation)
     return devices;
 }
 
-[[nodiscard]] std::uint32_t FindComputeQueue(VkPhysicalDevice device)
+[[nodiscard]] std::uint32_t FindRenderQueue(VkPhysicalDevice device)
 {
     std::uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> properties(count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, properties.data());
     for (std::uint32_t index = 0; index < count; ++index) {
-        if ((properties[index].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0U) {
+        constexpr VkQueueFlags required =
+            VK_QUEUE_COMPUTE_BIT | VK_QUEUE_GRAPHICS_BIT;
+        if ((properties[index].queueFlags & required) == required) {
             return index;
         }
     }
-    throw std::runtime_error("Vulkan path-tracing device has no compute queue");
+    throw std::runtime_error(
+        "Vulkan rendering device has no graphics-and-compute queue");
 }
 
 } // namespace
@@ -170,7 +173,7 @@ public:
                 "buffer device addresses, and descriptor indexing");
         }
 
-        queueFamily = FindComputeQueue(physicalDevice);
+        queueFamily = FindRenderQueue(physicalDevice);
         constexpr float priority = 1.0F;
         const VkDeviceQueueCreateInfo queueInfo{
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -238,6 +241,8 @@ public:
 VulkanContext::VulkanContext() : _impl(std::make_unique<Impl>()) {}
 VulkanContext::~VulkanContext() = default;
 const VulkanDeviceInfo& VulkanContext::DeviceInfo() const noexcept { return _impl->info; }
+std::uint32_t VulkanContext::RenderQueueFamily() const noexcept { return _impl->queueFamily; }
+void* VulkanContext::RenderQueueHandle() const noexcept { return _impl->queue; }
 std::uint32_t VulkanContext::ComputeQueueFamily() const noexcept { return _impl->queueFamily; }
 void* VulkanContext::InstanceHandle() const noexcept { return _impl->instance; }
 void* VulkanContext::PhysicalDeviceHandle() const noexcept { return _impl->physicalDevice; }

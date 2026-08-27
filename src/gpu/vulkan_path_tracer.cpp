@@ -1089,13 +1089,13 @@ public:
         : physical(static_cast<VkPhysicalDevice>(context.PhysicalDeviceHandle())),
           device(static_cast<VkDevice>(context.DeviceHandle())),
           queue(static_cast<VkQueue>(context.ComputeQueueHandle())),
-          queueFamily(context.ComputeQueueFamily())
+          queueFamily(context.ComputeQueueFamily()), shaderCache(&cache)
     {
         CreateCommandPool();
         CreateSubmissionResources();
         CreateSampler();
         CreateDescriptors();
-        CreatePipeline(cache);
+        CreatePipeline(cache, ShadingMode::Fused);
         uniform = CreateBuffer(sizeof(CameraUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
     }
@@ -1492,11 +1492,20 @@ public:
               "vkAllocateDescriptorSets");
     }
 
-    void CreatePipeline(ShaderCache& cache)
+    void CreatePipeline(ShaderCache& cache, ShadingMode mode)
     {
+        if (mode == ShadingMode::RasterPreview) {
+            throw std::invalid_argument(
+                "raster preview requires the MaterialX graphics backend");
+        }
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v9";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v6";
+        const std::string modeName(ShadingModeName(mode));
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v9." + modeName;
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v6." + modeName;
+        if (mode == ShadingMode::Modular) {
+            options.generateDebugInfo = true;
+            options.optimization = GlslCompileOptions::Optimization::None;
+        }
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -1533,6 +1542,19 @@ public:
             vkDestroyShaderModule(device, module, nullptr);
             throw;
         }
+    }
+
+    void SetShadingMode(ShadingMode mode)
+    {
+        if (mode == shadingMode) return;
+        if (!shaderCache) throw std::runtime_error("shader cache is unavailable");
+        Check(vkDeviceWaitIdle(device), "vkDeviceWaitIdle(shading mode)");
+        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipelineLayout) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        pipeline = VK_NULL_HANDLE;
+        pipelineLayout = VK_NULL_HANDLE;
+        CreatePipeline(*shaderCache, mode);
+        shadingMode = mode;
     }
 
     void DestroyAcceleration(VkAccelerationStructureKHR& acceleration, Buffer& storage)
@@ -2120,6 +2142,8 @@ public:
     VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
     VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
+    ShaderCache* shaderCache{nullptr};
+    ShadingMode shadingMode{ShadingMode::Fused};
     VkSampler textureSampler{VK_NULL_HANDLE};
     Buffer uniform;
     Buffer output;
@@ -2150,6 +2174,14 @@ VulkanPathTracer::~VulkanPathTracer() = default;
 void VulkanPathTracer::SetScene(const std::shared_ptr<const SceneSnapshot>& scene)
 {
     _impl->BuildScene(scene);
+}
+void VulkanPathTracer::SetShadingMode(ShadingMode mode)
+{
+    _impl->SetShadingMode(mode);
+}
+ShadingMode VulkanPathTracer::GetShadingMode() const noexcept
+{
+    return _impl->shadingMode;
 }
 std::vector<float> VulkanPathTracer::Render(
     const PathTracerCamera& camera, std::uint32_t width, std::uint32_t height,

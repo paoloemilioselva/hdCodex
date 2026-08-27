@@ -23,6 +23,12 @@ try {
     hdcodex::ShaderCache cache(cacheRoot);
     hdcodex::VulkanContext context;
     hdcodex::VulkanPathTracer tracer(context, cache);
+    Check(tracer.GetShadingMode() == hdcodex::ShadingMode::Fused,
+          "fused shading mode is not the path-tracer default");
+    tracer.SetShadingMode(hdcodex::ShadingMode::Modular);
+    Check(tracer.GetShadingMode() == hdcodex::ShadingMode::Modular,
+          "path tracer did not select modular shading mode");
+    tracer.SetShadingMode(hdcodex::ShadingMode::Fused);
 
     auto scene = std::make_shared<hdcodex::SceneSnapshot>();
     scene->revision = 1;

@@ -1,4 +1,5 @@
 #include "hdcodex/core/hash.h"
+#include "hdcodex/core/shading_mode.h"
 #include "hdcodex/core/shader_cache.h"
 #include "hdcodex/core/versioned_scene.h"
 
@@ -26,6 +27,29 @@ void TestSha256()
     Require(hdcodex::Sha256("abc") ==
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         "abc SHA-256 vector failed");
+}
+
+void TestShadingModes()
+{
+    using hdcodex::ShadingMode;
+    Require(hdcodex::ParseShadingMode("fused") == ShadingMode::Fused,
+            "fused shading mode was not parsed");
+    Require(hdcodex::ParseShadingMode("fused-specialized") == ShadingMode::Fused,
+            "fused shading mode alias was not parsed");
+    Require(hdcodex::ParseShadingMode("modular") == ShadingMode::Modular,
+            "modular shading mode was not parsed");
+    Require(hdcodex::ParseShadingMode("instrumented") == ShadingMode::Modular,
+            "modular shading mode alias was not parsed");
+    Require(hdcodex::ParseShadingMode("raster") == ShadingMode::RasterPreview,
+            "raster shading mode was not parsed");
+    Require(!hdcodex::ParseShadingMode("legacy").has_value(),
+            "unknown shading mode was accepted");
+    Require(hdcodex::ShadingModeName(ShadingMode::Fused) == "fused",
+            "fused shading mode name changed");
+    Require(hdcodex::ShadingModeName(ShadingMode::Modular) == "modular",
+            "modular shading mode name changed");
+    Require(hdcodex::ShadingModeName(ShadingMode::RasterPreview) == "raster",
+            "raster shading mode name changed");
 }
 
 void TestCache()
@@ -91,10 +115,45 @@ void TestVersionedScene()
     hdcodex::SceneMaterial material;
     material.id = "/red";
     material.baseColor = {1.0F, 0.0F, 0.0F};
+    material.shaderNodeId = "ND_open_pbr_surface_surfaceshader";
+    material.materialXPublicUniforms.push_back(
+        {"surface_base_weight", "float", "1.0"});
+    material.materialXTextures.push_back(
+        {"albedo_file", "albedo#srgb", "srgb_texture"});
+    material.materialXPixelDescriptors.push_back({
+        .name = "PublicUniforms",
+        .set = 0,
+        .binding = 0,
+        .kind = hdcodex::SceneMaterial::GeneratedDescriptorKind::UniformBuffer,
+        .members = {{"surface_base_weight", 0}},
+    });
+    material.materialXOutputNode = "surface";
+    material.materialXProgram.push_back({
+        .name = "surface",
+        .category = "surface",
+        .nodeDef = "ND_surface_surfaceshader",
+        .type = "surfaceshader",
+        .inputs = {{
+            .name = "bsdf",
+            .type = "BSDF",
+            .upstreamNode = "diffuse",
+        }},
+    });
     scene.UpsertMaterial(material);
     (void)scene.Publish();
     Require(scene.Snapshot()->materials.size() == 1,
             "scene snapshot lost material");
+    Require(scene.Snapshot()->materials.front().materialXPublicUniforms.size() == 1,
+            "scene snapshot lost generated MaterialX uniforms");
+    Require(scene.Snapshot()->materials.front().materialXTextures.size() == 1,
+            "scene snapshot lost generated MaterialX textures");
+    Require(scene.Snapshot()->materials.front().materialXPixelDescriptors.size() == 1 &&
+                scene.Snapshot()->materials.front()
+                        .materialXPixelDescriptors.front().members.front().offset == 0,
+            "scene snapshot lost generated MaterialX descriptor ABI");
+    Require(scene.Snapshot()->materials.front().materialXOutputNode == "surface" &&
+                scene.Snapshot()->materials.front().materialXProgram.size() == 1,
+            "scene snapshot lost generated MaterialX program");
     scene.RemoveMaterial("/red");
 
     scene.RemoveMesh("/triangle");
@@ -180,6 +239,7 @@ int main()
 {
     try {
         TestSha256();
+        TestShadingModes();
         TestCache();
         TestVersionedScene();
         TestSceneCarriesFaceCornerTextureCoordinates();

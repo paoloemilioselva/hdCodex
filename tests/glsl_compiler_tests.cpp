@@ -1,6 +1,8 @@
 #include "hdcodex/core/shader_cache.h"
 #include "hdcodex/gpu/glsl_compiler.h"
+#include "hdcodex/gpu/spirv_reflection.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -29,6 +31,11 @@ try {
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1, rgba32f) uniform image2D outputImage;
+layout(std140, set = 1, binding = 4) uniform ReflectedBlock
+{
+    float weight;
+    vec3 color;
+} reflected;
 void main()
 {
     rayQueryEXT query;
@@ -42,6 +49,19 @@ void main()
     const auto first = compiler.Compile(source, hdcodex::GlslShaderStage::Compute, "ray-query-test.comp");
     Check(!first.cacheHit, "first compilation unexpectedly hit the cache");
     Check(!first.words.empty() && first.words.front() == 0x07230203u, "invalid SPIR-V output");
+    const auto descriptors = hdcodex::ReflectSpirvDescriptors(first.words);
+    const auto reflected = std::ranges::find_if(descriptors, [](const auto& value) {
+        return value.set == 1U && value.binding == 4U;
+    });
+    Check(reflected != descriptors.end(), "uniform descriptor was not reflected");
+    Check(reflected->kind == hdcodex::SpirvDescriptorKind::UniformBuffer,
+          "uniform descriptor kind is incorrect");
+    Check(reflected->members.size() == 2U &&
+              reflected->members[0].name == "weight" &&
+              reflected->members[0].offset == 0U &&
+              reflected->members[1].name == "color" &&
+              reflected->members[1].offset == 16U,
+          "std140 member offsets were not reflected");
 
     const auto second = compiler.Compile(source, hdcodex::GlslShaderStage::Compute, "ray-query-test.comp");
     Check(second.cacheHit, "second compilation did not hit the cache");

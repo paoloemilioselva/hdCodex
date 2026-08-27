@@ -40,6 +40,12 @@ public:
     VulkanContext& operator=(VulkanContext&&) = delete;
 
     [[nodiscard]] const VulkanDeviceInfo& DeviceInfo() const noexcept;
+    /// The renderer uses one queue family supporting both compute/ray-query
+    /// dispatch and graphics draws so all shading modes share resources safely.
+    [[nodiscard]] std::uint32_t RenderQueueFamily() const noexcept;
+    [[nodiscard]] void* RenderQueueHandle() const noexcept;
+
+    /// Compatibility names for compute-only callers.
     [[nodiscard]] std::uint32_t ComputeQueueFamily() const noexcept;
 
     /// Type-erased Vulkan handles keep Vulkan headers out of public Hydra files.
@@ -54,4 +60,3 @@ private:
 };
 
 } // namespace hdcodex
-

@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
 namespace {
@@ -45,6 +46,12 @@ int EnvironmentInteger(const char* name, int fallback, int minimum, int maximum)
     return std::clamp(static_cast<int>(parsed), minimum, maximum);
 }
 
+std::string EnvironmentString(const char* name, const char* fallback)
+{
+    const char* value = std::getenv(name);
+    return value && *value ? value : fallback;
+}
+
 } // namespace
 
 HdCodexRenderDelegate::HdCodexRenderDelegate() { Initialize({}); }
@@ -67,6 +74,12 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     HdRenderDelegate::SetRenderSetting(
         TfToken("samplesPerUpdate"), VtValue(EnvironmentInteger(
             "HDCODEX_SAMPLES_PER_UPDATE", 8, 1, 64)));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("shadingMode"), VtValue(EnvironmentString(
+            "HDCODEX_SHADING_MODE", "fused")));
+    for (const auto& [key, value] : settingsMap) {
+        HdRenderDelegate::SetRenderSetting(key, value);
+    }
 #if defined(HDCODEX_HAS_VULKAN)
     _vulkan = std::make_unique<hdcodex::VulkanContext>();
 #endif
@@ -78,11 +91,12 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
 #if defined(HDCODEX_HAS_VULKAN)
     _pathTracer = std::make_unique<hdcodex::VulkanPathTracer>(*_vulkan, *_shaderCache);
 #endif
-    _renderParam = std::make_unique<HdCodexRenderParam>(&_scene, _materialCompiler.get());
+    const auto shadingMode = hdcodex::ParseShadingMode(
+        GetRenderSetting<std::string>(TfToken("shadingMode"), "fused"));
+    _renderParam = std::make_unique<HdCodexRenderParam>(
+        &_scene, _materialCompiler.get(),
+        shadingMode.value_or(hdcodex::ShadingMode::Fused));
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
-    for (const auto& [key, value] : settingsMap) {
-        HdRenderDelegate::SetRenderSetting(key, value);
-    }
 }
 
 const TfTokenVector& HdCodexRenderDelegate::GetSupportedRprimTypes() const { return SupportedRprims; }
@@ -93,6 +107,18 @@ TfTokenVector HdCodexRenderDelegate::GetMaterialRenderContexts() const { return 
 TfToken HdCodexRenderDelegate::GetMaterialBindingPurpose() const { return HdTokens->full; }
 HdRenderParam* HdCodexRenderDelegate::GetRenderParam() const { return _renderParam.get(); }
 HdResourceRegistrySharedPtr HdCodexRenderDelegate::GetResourceRegistry() const { return _resourceRegistry; }
+
+void HdCodexRenderDelegate::SetRenderSetting(
+    const TfToken& key, const VtValue& value)
+{
+    HdRenderDelegate::SetRenderSetting(key, value);
+    if (key != TfToken("shadingMode") || !_renderParam) return;
+    const std::string name =
+        VtValue::Cast<std::string>(value).GetWithDefault(std::string("fused"));
+    if (const auto mode = hdcodex::ParseShadingMode(name)) {
+        _renderParam->SetShadingMode(*mode);
+    }
+}
 
 HdRenderPassSharedPtr HdCodexRenderDelegate::CreateRenderPass(
     HdRenderIndex* index, const HdRprimCollection& collection)
@@ -195,6 +221,7 @@ HdCodexRenderDelegate::GetRenderSettingDescriptors() const
         {"Samples per Pixel", TfToken("samplesPerPixel"), VtValue(128)},
         {"Maximum Bounces", TfToken("maxBounces"), VtValue(8)},
         {"Samples per Update", TfToken("samplesPerUpdate"), VtValue(8)},
+        {"Shading Mode", TfToken("shadingMode"), VtValue(std::string("fused"))},
     };
 }
 

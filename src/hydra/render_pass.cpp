@@ -2,6 +2,8 @@
 
 #include "render_buffer.h"
 
+#include "hdcodex/core/shading_mode.h"
+
 #include "pxr/imaging/hd/renderPassState.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
@@ -11,6 +13,7 @@
 
 #include <algorithm>
 #include <span>
+#include <string>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -105,6 +108,17 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
                 TfToken("samplesPerUpdate"), 8)
             : 8,
         1, 64));
+    const std::string shadingModeName = _renderDelegate
+        ? _renderDelegate->GetRenderSetting<std::string>(
+            TfToken("shadingMode"), "fused")
+        : "fused";
+    const auto parsedShadingMode = hdcodex::ParseShadingMode(shadingModeName);
+    const hdcodex::ShadingMode shadingMode = parsedShadingMode.value_or(
+        hdcodex::ShadingMode::Fused);
+    if (!parsedShadingMode) {
+        TF_WARN("hdCodex shading mode '%s' is unknown; using fused",
+                shadingModeName.c_str());
+    }
     const auto revision = _scene->PublishedRevision();
     const hdcodex::PathTracerCamera camera = MakeCamera(renderPassState);
     HdCodexRenderBuffer* colorBuffer = nullptr;
@@ -134,12 +148,38 @@ void HdCodexRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassSta
 
     const unsigned int width = colorBuffer->GetWidth();
     const unsigned int height = colorBuffer->GetHeight();
+    if (shadingMode == hdcodex::ShadingMode::RasterPreview) {
+        if (_lastSettingsVersion != settingsVersion) {
+            TF_WARN(
+                "hdCodex raster-preview shading was selected, but its Vulkan "
+                "graphics backend is not implemented; no compute fallback "
+                "will be rendered");
+        }
+        colorBuffer->Clear(colorBinding->clearValue);
+        _sampleIndex = targetSamples;
+        _converged = true;
+        for (const HdRenderPassAovBinding& binding :
+             renderPassState->GetAovBindings()) {
+            if (auto* buffer =
+                    dynamic_cast<HdCodexRenderBuffer*>(binding.renderBuffer)) {
+                buffer->SetConverged(true);
+            }
+        }
+        _lastCamera = camera;
+        _lastWidth = width;
+        _lastHeight = height;
+        _hasCamera = true;
+        _lastRevision = revision;
+        _lastSettingsVersion = settingsVersion;
+        return;
+    }
     const bool cameraChanged = _hasCamera && !(camera == _lastCamera);
     const bool reset = _lastRevision != revision || !_hasCamera ||
         _lastSettingsVersion != settingsVersion ||
         cameraChanged || width != _lastWidth || height != _lastHeight;
     if (reset) {
         try {
+            _pathTracer->SetShadingMode(shadingMode);
             if (_lastRevision != revision) _pathTracer->SetScene(_scene->Snapshot());
             _sampleIndex = 0;
         } catch (const std::exception& error) {

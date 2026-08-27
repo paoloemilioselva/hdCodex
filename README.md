@@ -57,8 +57,10 @@ asset-input and display-output format, not the path-throughput representation.
 
 ### Materials and textures
 
-- Direct lowering of the supported OpenPBR, Autodesk Standard Surface, and
-  `UsdPreviewSurface` inputs into the compute material ABI.
+- Transitional lowering of supported MaterialX OpenPBR and Autodesk Standard
+  Surface inputs into the compute material ABI. USD-native `Usd*` shader
+  networks are diagnosed as unsupported instead of being silently translated
+  into lookalike MaterialX models.
 - Constant or image-driven base color, metalness, roughness, emission, opacity,
   normal, transmission, specular color/weight, coat, and subsurface controls.
 - OpenPBR transmission depth, volume scattering, dispersion, and subsurface
@@ -67,9 +69,10 @@ asset-input and display-output format, not the path-throughput representation.
   material textures, face-varying UV seams, and descriptor-indexed Vulkan image
   sampling.
 - MaterialX Vulkan GLSL generation, runtime glslang compilation to SPIR-V, and a
-  deterministic content/configuration cache. Generated raster modules are kept
-  by Hydra materials while the path tracer evaluates the explicitly supported
-  graph subset through its compute ABI.
+  deterministic content/configuration cache. Generated raster modules, their
+  reflected descriptor ABI, and an expanded MaterialX graph program are kept
+  by Hydra materials while the transitional path tracer evaluates its
+  explicitly supported lowered subset.
 
 ### Lighting
 
@@ -116,6 +119,8 @@ design and validation stages are recorded in the
 
 See [Architecture](docs/architecture.md) for implementation boundaries,
 [Building](docs/building.md) for dependency setup,
+[Shading development](docs/shading_development.md) for MaterialX decisions and
+the live shading capability audit,
 [Subdivision plan](docs/subdivision-plan.md) for planned OpenSubdiv integration,
 and [Gallery](gallery.md) for versioned reference renders and timings.
 

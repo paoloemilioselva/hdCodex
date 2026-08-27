@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <stdexcept>
 #include <string_view>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -41,6 +42,31 @@ HdMaterialNetwork2 ToNetwork2(const VtValue& resource)
         return resource.UncheckedGet<HdMaterialNetwork2>();
     }
     return {};
+}
+
+bool IsUsdNativeShaderId(const TfToken& identifier)
+{
+    return identifier.GetString().starts_with("Usd");
+}
+
+bool IsUsdNativeShaderNetwork(const VtValue& resource)
+{
+    if (resource.IsHolding<HdMaterialNetworkMap>()) {
+        const HdMaterialNetworkMap& map =
+            resource.UncheckedGet<HdMaterialNetworkMap>();
+        for (const auto& [terminal, network] : map.map) {
+            (void)terminal;
+            if (std::ranges::any_of(network.nodes, [](const HdMaterialNode& node) {
+                    return IsUsdNativeShaderId(node.identifier);
+                })) {
+                return true;
+            }
+        }
+    }
+    const HdMaterialNetwork2 network = ToNetwork2(resource);
+    return std::ranges::any_of(network.nodes, [](const auto& entry) {
+        return IsUsdNativeShaderId(entry.second.nodeTypeId);
+    });
 }
 
 float FloatParameter(const HdMaterialNode2& node, const char* name, float fallback)
@@ -151,7 +177,100 @@ std::string LoadTexture(
         false);
 }
 
-hdcodex::SceneMaterial ExtractSceneMaterial(
+void AttachGeneratedProgram(
+    hdcodex::SceneMaterial& material,
+    const hdcodex::MaterialXCompiledShader& compiled,
+    hdcodex::VersionedScene* scene)
+{
+    const auto descriptorKind = [](hdcodex::SpirvDescriptorKind kind) {
+        using Source = hdcodex::SpirvDescriptorKind;
+        using Target = hdcodex::SceneMaterial::GeneratedDescriptorKind;
+        switch (kind) {
+        case Source::UniformBuffer: return Target::UniformBuffer;
+        case Source::StorageBuffer: return Target::StorageBuffer;
+        case Source::SampledImage: return Target::SampledImage;
+        case Source::StorageImage: return Target::StorageImage;
+        case Source::AccelerationStructure: return Target::AccelerationStructure;
+        case Source::Unknown: return Target::Unknown;
+        }
+        return Target::Unknown;
+    };
+    const auto copyDescriptors = [&descriptorKind](
+        const std::vector<hdcodex::SpirvDescriptor>& source,
+        std::vector<hdcodex::SceneMaterial::GeneratedDescriptor>& target) {
+        target.reserve(source.size());
+        for (const hdcodex::SpirvDescriptor& sourceDescriptor : source) {
+            hdcodex::SceneMaterial::GeneratedDescriptor descriptor{
+                .name = sourceDescriptor.name,
+                .set = sourceDescriptor.set,
+                .binding = sourceDescriptor.binding,
+                .kind = descriptorKind(sourceDescriptor.kind),
+            };
+            descriptor.members.reserve(sourceDescriptor.members.size());
+            for (const hdcodex::SpirvBlockMember& member :
+                 sourceDescriptor.members) {
+                descriptor.members.push_back({member.name, member.offset});
+            }
+            target.push_back(std::move(descriptor));
+        }
+    };
+
+    material.materialXMode = compiled.mode;
+    material.materialXVertexSpirv = compiled.vertexSpirv.words;
+    material.materialXPixelSpirv = compiled.pixelSpirv.words;
+    copyDescriptors(
+        compiled.vertexDescriptors, material.materialXVertexDescriptors);
+    copyDescriptors(
+        compiled.pixelDescriptors, material.materialXPixelDescriptors);
+    material.materialXPublicUniforms.reserve(compiled.publicUniforms.size());
+    for (const hdcodex::MaterialXShaderInput& input : compiled.publicUniforms) {
+        material.materialXPublicUniforms.push_back({
+            .name = input.name,
+            .type = input.type,
+            .value = input.value,
+        });
+    }
+    for (const hdcodex::MaterialXShaderInput& texture : compiled.textures) {
+        // Lighting resources are renderer-owned private uniforms, not material
+        // graph images.  They are bound by the raster backend.
+        if (texture.value.empty() || texture.value == "$envRadiance" ||
+            texture.value == "$envIrradiance") {
+            continue;
+        }
+        const bool srgb = texture.colorSpace == "srgb_texture" ||
+            texture.colorSpace == "srgb_rec709_scene";
+        const std::string textureId = LoadTexture(scene, texture.value, srgb);
+        if (textureId.empty()) continue;
+        material.materialXTextures.push_back({
+            .uniformName = texture.name,
+            .textureId = textureId,
+            .colorSpace = texture.colorSpace,
+        });
+    }
+    material.materialXOutputNode = compiled.program.outputNode;
+    material.materialXProgram.reserve(compiled.program.nodes.size());
+    for (const hdcodex::MaterialXProgramNode& sourceNode : compiled.program.nodes) {
+        hdcodex::SceneMaterial::GeneratedNode node{
+            .name = sourceNode.name,
+            .category = sourceNode.category,
+            .nodeDef = sourceNode.nodeDef,
+            .type = sourceNode.type,
+        };
+        node.inputs.reserve(sourceNode.inputs.size());
+        for (const hdcodex::MaterialXProgramInput& sourceInput : sourceNode.inputs) {
+            node.inputs.push_back({
+                .name = sourceInput.name,
+                .type = sourceInput.type,
+                .value = sourceInput.value,
+                .upstreamNode = sourceInput.upstreamNode,
+                .upstreamOutput = sourceInput.upstreamOutput,
+            });
+        }
+        material.materialXProgram.push_back(std::move(node));
+    }
+}
+
+std::optional<hdcodex::SceneMaterial> ExtractSceneMaterial(
     const VtValue& resource,
     const SdfPath& materialPath,
     hdcodex::VersionedScene* scene)
@@ -170,17 +289,17 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             (void)path;
             const std::string type = node.nodeTypeId.GetString();
             if (type.find("standard_surface") != std::string::npos ||
-                type.find("open_pbr_surface") != std::string::npos ||
-                type.find("UsdPreviewSurface") != std::string::npos) {
+                type.find("open_pbr_surface") != std::string::npos) {
                 surface = &node;
                 break;
             }
         }
     }
-    if (!surface) return material;
+    if (!surface) return std::nullopt;
 
     const HdMaterialNode2& node = *surface;
     const std::string type = node.nodeTypeId.GetString();
+    material.shaderNodeId = type;
     if (type.find("open_pbr_surface") != std::string::npos) {
         material.baseColor = ColorParameter(node, "base_color", material.baseColor);
         material.metalness = FloatParameter(node, "base_metalness", material.metalness);
@@ -345,35 +464,14 @@ hdcodex::SceneMaterial ExtractSceneMaterial(
             scene, TextureForInput(network, node, "subsurface_radius"), false);
         return material;
     }
-    if (type.find("UsdPreviewSurface") != std::string::npos) {
-        material.baseColor = ColorParameter(node, "diffuseColor", material.baseColor);
-        material.metalness = FloatParameter(node, "metallic", material.metalness);
-        material.roughness = FloatParameter(node, "roughness", material.roughness);
-        material.emission = ColorParameter(node, "emissiveColor", material.emission);
-        material.emissionWeight = 1.0F;
-        material.opacity = FloatParameter(node, "opacity", material.opacity);
-        material.indexOfRefraction = FloatParameter(node, "ior", material.indexOfRefraction);
-        material.baseColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "diffuseColor"), true);
-        material.metalnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "metallic"), false);
-        material.roughnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "roughness"), false);
-        material.emissionTexture = LoadTexture(
-            scene, TextureForInput(network, node, "emissiveColor"), true);
-        material.opacityTexture = LoadTexture(
-            scene, TextureForInput(network, node, "opacity"), false);
-        material.normalTexture = LoadTexture(
-            scene, TextureForInput(network, node, "normal"), false);
-        return material;
-    }
-    return material;
+    return std::nullopt;
 }
 
 std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
     const VtValue& resource,
     const SdfPath& materialPath,
-    hdcodex::MaterialXCompiler* compiler)
+    hdcodex::MaterialXCompiler* compiler,
+    hdcodex::ShadingMode mode)
 {
     if (!compiler) return {};
 
@@ -384,6 +482,12 @@ std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
     if (terminal == network.terminals.end()) return {};
     const auto node = network.nodes.find(terminal->second.upstreamNode);
     if (node == network.nodes.end()) return {};
+    if (IsUsdNativeShaderNetwork(resource)) {
+        throw std::runtime_error(
+            "the network contains USD-native Usd* shader nodes and is not a "
+            "MaterialX shader network; author MaterialX NodeDefs in the mtlx "
+            "render context to use their MaterialX implementations");
+    }
 
     const MaterialX::DocumentPtr document = HdMtlxCreateMtlxDocumentFromHdNetwork(
         network,
@@ -394,7 +498,7 @@ std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
     if (!document) return {};
 
     return std::make_shared<const hdcodex::MaterialXCompiledShader>(
-        compiler->CompileDocument(document, materialPath.GetName()));
+        compiler->CompileDocument(document, materialPath.GetName(), mode));
 }
 
 } // namespace
@@ -412,13 +516,40 @@ void HdCodexMaterial::Sync(HdSceneDelegate* sceneDelegate,
 #if defined(HDCODEX_HAS_MATERIALX)
         std::shared_ptr<const hdcodex::MaterialXCompiledShader> compiled;
         if (auto* param = dynamic_cast<HdCodexRenderParam*>(renderParam)) {
-            param->GetScene()->UpsertMaterial(
-                ExtractSceneMaterial(resource, GetId(), param->GetScene()));
-            try {
-                compiled = CompileMaterialX(resource, GetId(), param->GetMaterialCompiler());
-            } catch (const std::exception& error) {
-                TF_WARN("hdCodex could not compile MaterialX material %s: %s",
-                        GetId().GetText(), error.what());
+            if (IsUsdNativeShaderNetwork(resource)) {
+                param->GetScene()->RemoveMaterial(GetId().GetString());
+                TF_WARN(
+                    "hdCodex material %s contains USD-native Usd* shader nodes; "
+                    "it is not a MaterialX shader network and is unsupported. "
+                    "Author MaterialX NodeDefs in the mtlx render context to "
+                    "use their MaterialX implementations.",
+                    GetId().GetText());
+            } else {
+                auto extracted = ExtractSceneMaterial(
+                    resource, GetId(), param->GetScene());
+                try {
+                    compiled = CompileMaterialX(
+                        resource, GetId(), param->GetMaterialCompiler(),
+                        param->GetShadingMode());
+                } catch (const std::exception& error) {
+                    TF_WARN("hdCodex could not compile MaterialX material %s: %s",
+                            GetId().GetText(), error.what());
+                }
+                if (!compiled) {
+                    param->GetScene()->RemoveMaterial(GetId().GetString());
+                } else if (!extracted) {
+                    param->GetScene()->RemoveMaterial(GetId().GetString());
+                    TF_WARN(
+                        "hdCodex generated MaterialX raster code for material %s, "
+                        "but its path-tracing closure runtime is not implemented; "
+                        "the material is unsupported rather than silently "
+                        "approximated.",
+                        GetId().GetText());
+                } else {
+                    AttachGeneratedProgram(
+                        *extracted, *compiled, param->GetScene());
+                    param->GetScene()->UpsertMaterial(std::move(*extracted));
+                }
             }
         }
 #endif

@@ -1,4 +1,5 @@
 add_library(hdCodexGpu STATIC
+  spirv_reflection.cpp
   vulkan_path_tracer.cpp
   vulkan_context.cpp
 )

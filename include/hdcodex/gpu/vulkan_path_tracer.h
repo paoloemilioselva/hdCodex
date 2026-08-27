@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hdcodex/core/shading_mode.h"
 #include "hdcodex/core/versioned_scene.h"
 
 #include <array>
@@ -31,6 +32,8 @@ public:
     VulkanPathTracer& operator=(const VulkanPathTracer&) = delete;
 
     void SetScene(const std::shared_ptr<const SceneSnapshot>& scene);
+    void SetShadingMode(ShadingMode mode);
+    [[nodiscard]] ShadingMode GetShadingMode() const noexcept;
 
     /// Traces a progressive sample batch per pixel and returns linear RGBA32F.
     [[nodiscard]] std::vector<float> Render(

@@ -1,4 +1,5 @@
 add_library(hdCodexCore STATIC
+  ${PROJECT_SOURCE_DIR}/include/hdcodex/core/shading_mode.h
   hash.cpp
   shader_cache.cpp
 )
@@ -14,4 +15,3 @@ set_target_properties(hdCodexCore PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   OUTPUT_NAME hdCodexCore
 )
-

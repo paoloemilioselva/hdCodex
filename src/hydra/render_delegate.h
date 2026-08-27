@@ -34,6 +34,7 @@ public:
     TfToken GetMaterialBindingPurpose() const override;
     HdRenderParam* GetRenderParam() const override;
     HdResourceRegistrySharedPtr GetResourceRegistry() const override;
+    void SetRenderSetting(const TfToken& key, const VtValue& value) override;
     HdRenderPassSharedPtr CreateRenderPass(
         HdRenderIndex* index, const HdRprimCollection& collection) override;
     HdInstancer* CreateInstancer(HdSceneDelegate* delegate, const SdfPath& id) override;

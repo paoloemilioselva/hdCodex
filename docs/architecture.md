@@ -137,9 +137,10 @@ The default pipeline is:
 3. Compile the generated raster stages to SPIR-V with glslang and cache them
    under a SHA-256 key containing source, generator/compiler versions, target,
    and ABI.
-4. Separately lower supported OpenPBR, Standard Surface, and Preview Surface
-   parameters and connected image nodes into the path tracer's compute material
-   ABI.
+4. For currently supported MaterialX OpenPBR and Standard Surface graphs,
+   temporarily lower selected parameters and connected image nodes into the
+   path tracer's compute material ABI. USD-native `Usd*` networks are rejected
+   rather than translated into MaterialX lookalikes.
 5. Decode referenced images through Hio and upload them to descriptor-indexed
    Vulkan images with sRGB/raw formats selected per input role.
 
@@ -155,8 +156,8 @@ vertex inputs such as `i_geomprop_st` from colliding with same-named stage
 outputs. It can be deleted when the standalone OpenUSD distribution moves to a
 MaterialX version with the corrected generator.
 
-The GPU BSDF binding supports constant and image-driven OpenPBR,
-`standard_surface`, and Preview Surface base color, metalness, specular
+The transitional GPU BSDF binding supports constant and image-driven MaterialX
+OpenPBR and `standard_surface` base color, metalness, specular
 roughness, emission, opacity, tangent-space normals, transmission, dielectric
 specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
 order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,

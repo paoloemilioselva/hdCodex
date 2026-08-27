@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hdcodex/core/shading_mode.h"
+
 #include <atomic>
 #include <array>
 #include <cstdint>
@@ -31,7 +33,76 @@ struct SceneMesh {
 };
 
 struct SceneMaterial {
+    struct GeneratedInput {
+        std::string name;
+        std::string type;
+        std::string value;
+    };
+
+    struct GeneratedTexture {
+        std::string uniformName;
+        std::string textureId;
+        std::string colorSpace;
+    };
+
+    enum class GeneratedDescriptorKind {
+        Unknown,
+        UniformBuffer,
+        StorageBuffer,
+        SampledImage,
+        StorageImage,
+        AccelerationStructure,
+    };
+
+    struct GeneratedDescriptorMember {
+        std::string name;
+        std::uint32_t offset{0};
+    };
+
+    struct GeneratedDescriptor {
+        std::string name;
+        std::uint32_t set{0};
+        std::uint32_t binding{0};
+        GeneratedDescriptorKind kind{GeneratedDescriptorKind::Unknown};
+        std::vector<GeneratedDescriptorMember> members;
+    };
+
+    struct GeneratedNodeInput {
+        std::string name;
+        std::string type;
+        std::string value;
+        std::string upstreamNode;
+        std::string upstreamOutput;
+    };
+
+    struct GeneratedNode {
+        std::string name;
+        std::string category;
+        std::string nodeDef;
+        std::string type;
+        std::vector<GeneratedNodeInput> inputs;
+    };
+
     std::string id;
+    /// Authored terminal NodeDef identifier. Empty only for fallback materials.
+    std::string shaderNodeId;
+    ShadingMode materialXMode{ShadingMode::Fused};
+    /// Generated MaterialX raster modules retained for the raster-preview backend
+    /// and as the semantic source for generated closure compilation.
+    std::vector<std::uint32_t> materialXVertexSpirv;
+    std::vector<std::uint32_t> materialXPixelSpirv;
+    std::vector<GeneratedDescriptor> materialXVertexDescriptors;
+    std::vector<GeneratedDescriptor> materialXPixelDescriptors;
+    /// Reflected inputs preserve the generated program ABI for raster preview
+    /// and future generated closure linking.  They are deliberately separate
+    /// from the temporary hand-lowered fields below.
+    std::vector<GeneratedInput> materialXPublicUniforms;
+    std::vector<GeneratedTexture> materialXTextures;
+    /// Dependency-ordered graph produced by expanding MaterialX NodeGraph
+    /// implementations. The path tracer does not execute this program yet;
+    /// it is the source IR for the closure ABI replacing the fields below.
+    std::string materialXOutputNode;
+    std::vector<GeneratedNode> materialXProgram;
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
     std::array<float, 3> transmissionColor{1.0F, 1.0F, 1.0F};

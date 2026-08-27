@@ -12,6 +12,11 @@ both intentional improvements and regressions as those paths evolve.
 ### Intel Sponza Base Scene
 **Reference:** [Intel Graphics Research Samples](http://intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html)
 
+This asset's bound materials are USD-native `UsdPreviewSurface` networks. They
+are intentionally reported as unsupported rather than translated into
+MaterialX, so this baseline exercises the bound-material fallback and shader
+provenance diagnostics.
+
 **Command:**
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera PhysCamera001 gallery\intel_sponza.usda gallery\intel_sponza.jpg
@@ -88,6 +93,10 @@ both intentional improvements and regressions as those paths evolve.
 
 ### OpenPBR Playground
 **Reference:** [OpenPBR Playground](https://github.com/DigitalProductionExampleLibrary/OpenPBRShaderPlayground/blob/main/ShdrPlygrnd/ShdrPlygrnd_OpenPBR.usda)
+
+This is the MaterialX/OpenPBR generation baseline. The authored `OJfoam`
+material has a color3-to-float `geometry_opacity` interface mismatch and is
+intentionally diagnosed and omitted.
 
 **Command:**
 ```cmd
