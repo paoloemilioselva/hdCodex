@@ -19,6 +19,8 @@ namespace {
 
 constexpr std::uint32_t kMaxMaterialTextures = 256U;
 constexpr std::uint32_t kMissingTexture = UINT32_MAX;
+constexpr std::uint32_t kUdimTextureFlag = 0x80000000U;
+constexpr std::uint32_t kUdimTileMask = 0x7fffffU;
 constexpr std::uint32_t kMaxPathBounces = 12U;
 constexpr std::uint32_t kMaxLights = 64U;
 constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
@@ -346,8 +348,19 @@ vec3 environment(vec3 direction)
 
 vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
 {
-    return textureIndex == 0xffffffffu ? fallbackValue
-        : texture(materialTextures[nonuniformEXT(textureIndex)], uv);
+    if (textureIndex == 0xffffffffu) return fallbackValue;
+    if ((textureIndex & 0x80000000u) != 0u) {
+        ivec2 tile = ivec2(floor(uv));
+        int tileOffset = tile.x + tile.y * 10;
+        if (tileOffset < 0 || tileOffset >= 23) return fallbackValue;
+        uint presentTiles = (textureIndex >> 8u) & 0x7fffffu;
+        uint tileBit = 1u << uint(tileOffset);
+        if ((presentTiles & tileBit) == 0u) return fallbackValue;
+        uint descriptorIndex = (textureIndex & 0xffu) +
+            uint(bitCount(presentTiles & (tileBit - 1u)));
+        return texture(materialTextures[nonuniformEXT(descriptorIndex)], fract(uv));
+    }
+    return texture(materialTextures[nonuniformEXT(textureIndex)], uv);
 }
 
 vec2 surfaceTextureCoordinates(uint primitive, vec2 barycentrics)
@@ -1482,8 +1495,8 @@ public:
     void CreatePipeline(ShaderCache& cache)
     {
         GlslCompileOptions options;
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v8";
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v5";
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v9";
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v6";
         const auto spirv = GlslCompiler(cache).Compile(
             kPathTracerSource, GlslShaderStage::Compute, "path_tracer.comp", options);
         const VkShaderModuleCreateInfo moduleInfo{
@@ -1584,13 +1597,35 @@ public:
         std::vector<GpuMaterial> materials;
         std::vector<GpuLight> lights;
         std::map<std::string, std::uint32_t, std::less<>> textureIndices;
-        const std::size_t textureCount = std::min<std::size_t>(
-            snapshot->textures.size(), kMaxMaterialTextures);
-        textures.reserve(textureCount);
-        for (std::size_t index = 0; index < textureCount; ++index) {
-            const SceneTexture& texture = snapshot->textures[index];
-            textureIndices[texture.id] = static_cast<std::uint32_t>(index);
+        std::map<std::string, std::vector<const SceneTexture*>, std::less<>> udimSets;
+        textures.reserve(std::min<std::size_t>(
+            snapshot->textures.size(), kMaxMaterialTextures));
+        for (const SceneTexture& texture : snapshot->textures) {
+            if (!texture.udimSetId.empty() && texture.udimTile != 0U) {
+                udimSets[texture.udimSetId].push_back(&texture);
+                continue;
+            }
+            if (textures.size() >= kMaxMaterialTextures) continue;
+            textureIndices[texture.id] = static_cast<std::uint32_t>(textures.size());
             textures.push_back(CreateTexture(texture));
+        }
+        for (auto& [setId, tiles] : udimSets) {
+            std::sort(tiles.begin(), tiles.end(),
+                [](const SceneTexture* left, const SceneTexture* right) {
+                    return left->udimTile < right->udimTile;
+                });
+            const std::uint32_t base = static_cast<std::uint32_t>(textures.size());
+            std::uint32_t presentTiles = 0U;
+            for (const SceneTexture* tile : tiles) {
+                if (textures.size() >= kMaxMaterialTextures) break;
+                if (tile->udimTile < 1001U || tile->udimTile > 1023U) continue;
+                presentTiles |= 1U << (tile->udimTile - 1001U);
+                textures.push_back(CreateTexture(*tile));
+            }
+            if (presentTiles != 0U) {
+                textureIndices[setId] = kUdimTextureFlag |
+                    ((presentTiles & kUdimTileMask) << 8U) | base;
+            }
         }
         const auto textureIndex = [&textureIndices](const std::string& id) {
             const auto found = textureIndices.find(id);

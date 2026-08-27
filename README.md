@@ -102,9 +102,9 @@ Hydra adapters publish immutable scene snapshots to `VulkanPathTracer`. The
 current backend flattens visible world-space geometry into one BLAS and builds a
 single-instance TLAS when the published scene changes. Camera-only changes reuse
 the acceleration structures. Per-mesh BLAS caching, native TLAS instances,
-deforming-BLAS refits, overlapped readback, ray differentials/texture LOD, UDIMs,
-subdivision refinement, arbitrary MaterialX procedural graphs, and more UsdLux
-light types remain future work.
+deforming-BLAS refits, overlapped readback, ray differentials/texture LOD, UDIM
+tiles beyond 1023, subdivision refinement, arbitrary MaterialX procedural
+graphs, and more UsdLux light types remain future work.
 
 Vulkan ray queries are the primary backend because they expose the same hardware
 RT units through a portable API and keep traversal inside the compute integrator.

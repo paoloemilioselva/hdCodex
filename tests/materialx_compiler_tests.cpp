@@ -45,6 +45,31 @@ try {
     Check(second.vertexSpirv.words == first.vertexSpirv.words, "cached vertex SPIR-V changed");
     Check(second.pixelSpirv.words == first.pixelSpirv.words, "cached pixel SPIR-V changed");
 
+    constexpr auto texturedXml = R"mtlx(<?xml version="1.0"?>
+<materialx version="1.39">
+  <geompropvalue name="st" type="vector2">
+    <input name="geomprop" type="string" value="st"/>
+  </geompropvalue>
+  <image name="albedo" type="color3">
+    <input name="file" type="filename" value="unused.png"/>
+    <input name="texcoord" type="vector2" nodename="st"/>
+  </image>
+  <open_pbr_surface name="surface" type="surfaceshader">
+    <input name="base_color" type="color3" nodename="albedo"/>
+  </open_pbr_surface>
+  <surfacematerial name="material" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface"/>
+  </surfacematerial>
+</materialx>)mtlx";
+    const auto textured = compiler.CompileXml(texturedXml, "textured_openpbr_test");
+    Check(textured.vertexSource.find("out vec2 vd_i_geomprop_st;") != std::string::npos,
+          "MaterialX vertex connector was not uniquely renamed");
+    Check(textured.pixelSource.find("in vec2 vd_i_geomprop_st;") != std::string::npos,
+          "MaterialX pixel connector was not uniquely renamed");
+    Check(textured.vertexSource.find("vd_i_geomprop_st = i_geomprop_st;") !=
+              std::string::npos,
+          "MaterialX vertex connector assignment was not flattened");
+
     std::filesystem::remove_all(cacheRoot, error);
     std::cout << hdcodex::MaterialXCompiler::GeneratorVersion()
               << ": generation, compilation, and cache tests passed\n";

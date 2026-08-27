@@ -57,6 +57,26 @@ try {
         .rgba = {255, 255, 255, 255},
     });
     scene->textures.push_back({
+        .id = "synthetic-udim#srgb#udim=1001",
+        .sourcePath = "synthetic.1001",
+        .udimSetId = "synthetic-udim#srgb",
+        .udimTile = 1001,
+        .width = 1,
+        .height = 1,
+        .srgb = true,
+        .rgba = {230, 16, 16, 255},
+    });
+    scene->textures.push_back({
+        .id = "synthetic-udim#srgb#udim=1002",
+        .sourcePath = "synthetic.1002",
+        .udimSetId = "synthetic-udim#srgb",
+        .udimTile = 1002,
+        .width = 1,
+        .height = 1,
+        .srgb = true,
+        .rgba = {16, 24, 230, 255},
+    });
+    scene->textures.push_back({
         .id = "rect#hdr",
         .sourcePath = "synthetic",
         .width = 1,
@@ -137,6 +157,20 @@ try {
     Check(pixels[center + 1] > pixels[center] * 1.5F,
           "path tracer did not sample the bound base-color texture");
     Check(pixels[center + 3] == 1.0F, "path tracer alpha is not one");
+
+    scene->meshes.front().texcoords = {
+        1.1F, 0.1F, 1.9F, 0.1F, 1.5F, 0.9F,
+    };
+    scene->materials.front().baseColorTexture = "synthetic-udim#srgb";
+    tracer.SetScene(scene);
+    const auto udimPixels = renderSamples(64U);
+    Check(udimPixels[center + 2] > udimPixels[center] * 2.0F,
+          "path tracer did not select the authored UDIM tile");
+    scene->meshes.front().texcoords = {
+        0.0F, 0.0F, 1.0F, 0.0F, 0.5F, 1.0F,
+    };
+    scene->materials.front().baseColorTexture = "green#srgb";
+    tracer.SetScene(scene);
 
     const auto progressive = tracer.Render(camera, width, height, 64U);
     Check(progressive.size() == pixels.size(), "progressive image size changed");

@@ -85,3 +85,14 @@ both intentional improvements and regressions as those paths evolve.
 **Render Time:** 5.32 seconds
 
 ![Collective Project 001](gallery/collectiveproject001.jpg)
+
+### OpenPBR Playground
+**Reference:** [OpenPBR Playground](https://github.com/DigitalProductionExampleLibrary/OpenPBRShaderPlayground/blob/main/ShdrPlygrnd/ShdrPlygrnd_OpenPBR.usda)
+
+**Command:**
+```cmd
+.\render_codex.bat --imageWidth 512 --purposes render --camera renderCam_mainCU gallery\openpbr_playground.usda gallery\openpbr_playground.jpg
+```
+**Render Time:** 5.32 seconds
+
+![OpenPBR Playground](gallery/openpbr_playground.jpg)

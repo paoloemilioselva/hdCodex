@@ -78,6 +78,11 @@ struct SceneMaterial {
 struct SceneTexture {
     std::string id;
     std::string sourcePath;
+    /// Non-empty for a tile belonging to one logical MaterialX UDIM image.
+    /// Tiles in a set are uploaded independently and selected from the UV tile
+    /// number in the path tracer, avoiding a potentially enormous sparse atlas.
+    std::string udimSetId;
+    std::uint32_t udimTile{0};
     std::uint32_t width{0};
     std::uint32_t height{0};
     bool srgb{false};

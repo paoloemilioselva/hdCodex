@@ -149,9 +149,11 @@ point, optimization mode, and material ABI are all part of the cache key.
 
 OpenUSD 26.03 contains MaterialX 1.39.3. Its Vulkan generator emits individually
 located stage connector variables but retains the desktop-GLSL `vd.` instance
-prefix in expressions. The compatibility adapter removes only this stale
-prefix before glslang validation. It can be deleted when the standalone OpenUSD
-distribution moves to a MaterialX version with the corrected generator.
+prefix in expressions. The compatibility adapter flattens this prefix into a
+dedicated `vd_` connector namespace before glslang validation, preventing
+vertex inputs such as `i_geomprop_st` from colliding with same-named stage
+outputs. It can be deleted when the standalone OpenUSD distribution moves to a
+MaterialX version with the corrected generator.
 
 The GPU BSDF binding supports constant and image-driven OpenPBR,
 `standard_surface`, and Preview Surface base color, metalness, specular
@@ -159,7 +161,11 @@ roughness, emission, opacity, tangent-space normals, transmission, dielectric
 specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
 order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
 and accessed through a partially-bound descriptor array currently capped at
-256 textures.
+256 textures. UDIM tiles are decoded to at most 1024 pixels on their longest
+edge to bound CPU and GPU residency for texture-heavy scenes; ordinary material
+images retain their authored resolution. UDIM sets use separate tile descriptors
+selected from the integer UV tile, avoiding large sparse atlases; the current
+compact handle covers tiles 1001 through 1023.
 Opacity participates in primary and shadow ray-query candidate confirmation.
 Transmission supports spectral color, wavelength-dependent Cauchy IOR from
 OpenPBR dispersion controls, Fresnel refraction, thin-walled surfaces, Beer-law
@@ -179,9 +185,9 @@ unsupported material continues through the normal material fallback path.
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute
 shader, so hdCodex separately lowers the supported graph subset into its compute
-ABI. Arbitrary procedural nodes, UDIMs, texture transforms, sheen, an unbounded
-multi-scatter BSSRDF,
-and a general MaterialX-to-path-tracer callable ABI are not implemented.
+ABI. Arbitrary procedural nodes, texture transforms, sheen, an unbounded
+multi-scatter BSSRDF, and a general MaterialX-to-path-tracer callable ABI are
+not implemented.
 
 ## Subdivision surfaces
 

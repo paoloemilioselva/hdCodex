@@ -11,6 +11,7 @@
 #include <MaterialXGenShader/Util.h>
 
 #include <stdexcept>
+#include <string>
 
 namespace hdcodex {
 namespace {
@@ -32,16 +33,52 @@ void ReplaceAll(std::string& source, std::string_view needle, std::string_view r
     }
 }
 
+void RenameInterfaceDeclaration(
+    std::string& source,
+    std::string_view qualifier,
+    std::string_view oldName,
+    std::string_view newName)
+{
+    const std::string qualifierMarker = " " + std::string(qualifier) + " ";
+    const std::string declarationEnd = " " + std::string(oldName) + ";";
+    std::size_t lineStart = 0;
+    while (lineStart < source.size()) {
+        const std::size_t lineEnd = source.find('\n', lineStart);
+        const std::size_t length = (lineEnd == std::string::npos ? source.size() : lineEnd) -
+            lineStart;
+        const std::string_view line(source.data() + lineStart, length);
+        if (line.find("layout") != std::string_view::npos &&
+            line.find(qualifierMarker) != std::string_view::npos &&
+            line.ends_with(declarationEnd)) {
+            source.replace(lineStart + length - oldName.size() - 1,
+                           oldName.size(), newName);
+            lineStart += newName.size() - oldName.size();
+        }
+        if (lineEnd == std::string::npos) break;
+        lineStart = source.find('\n', lineStart) + 1;
+    }
+}
+
 void FlattenVulkanVertexData(MaterialX::Shader& shader, std::string& vertex, std::string& pixel)
 {
     // MaterialX 1.39.3's Vk generator declares stage connectors as individual
     // location-qualified variables, but still emits the struct instance prefix
-    // inherited from the desktop GLSL generator. Remove that stale prefix.
+    // inherited from the desktop GLSL generator. Flatten the prefix while
+    // retaining a distinct connector namespace: an output such as
+    // i_geomprop_st otherwise collides with the vertex input of the same name.
     const auto& block = shader.getStage(MaterialX::Stage::VERTEX)
         .getOutputBlock(MaterialX::HW::VERTEX_DATA);
     if (block.empty()) return;
-    ReplaceAll(vertex, MaterialX::HW::VERTEX_DATA_INSTANCE + ".", "");
-    ReplaceAll(pixel, MaterialX::HW::VERTEX_DATA_INSTANCE + ".", "");
+    for (const MaterialX::ShaderPort* port : block.getVariableOrder()) {
+        const std::string& name = port->getVariable();
+        const std::string flattenedName = "vd_" + name;
+        const std::string qualifiedName =
+            MaterialX::HW::VERTEX_DATA_INSTANCE + "." + name;
+        RenameInterfaceDeclaration(vertex, "out", name, flattenedName);
+        RenameInterfaceDeclaration(pixel, "in", name, flattenedName);
+        ReplaceAll(vertex, qualifiedName, flattenedName);
+        ReplaceAll(pixel, qualifiedName, flattenedName);
+    }
 }
 
 } // namespace
