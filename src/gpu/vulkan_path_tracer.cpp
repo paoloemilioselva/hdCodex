@@ -51,6 +51,7 @@ struct GpuMaterial {
     vec4 transmissionMedium;
     vec4 transmissionScatter;
     vec4 sheenColorMode;
+    vec4 diffuseProperties;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
@@ -669,9 +670,88 @@ vec3 shadowVisibility(vec3 origin, vec3 direction, float maximumDistance,
     return mix(vec3(1.0), light.shadowColor.rgb, strength);
 }
 
+float eonDirectionalAlbedo(float nDotDirection, float roughness)
+{
+    const float c1 = 0.2877934092;
+    float cosine = clamp(nDotDirection, 0.0, 1.0);
+    float sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+    float theta = acos(cosine);
+    float sineCubed = sine * sine * sine;
+    float g = sine * (theta - sine * cosine) + (2.0 / 3.0) *
+        (sine * (1.0 - sineCubed) / max(cosine, 1e-5) - sine);
+    float a = 1.0 / (1.0 + c1 * roughness);
+    return clamp(a + roughness * a * g / 3.14159265359, 0.0, 1.0);
+}
+
+vec3 evaluateDiffuseReflection(
+    vec3 normal, vec3 viewDirection, vec3 lightDirection,
+    vec3 diffuseColor, float roughness, uint model)
+{
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    if (nDotL <= 0.0 || nDotV <= 0.0) return vec3(0.0);
+    if (model == 1u) {
+        float sigma = clamp(roughness, 0.0, 1.0);
+        float sigmaSquared = sigma * sigma;
+        float a = 1.0 - 0.5 * sigmaSquared /
+            (sigmaSquared + 0.33);
+        float b = 0.45 * sigmaSquared /
+            (sigmaSquared + 0.09);
+        vec3 projectedLight = lightDirection - normal * nDotL;
+        vec3 projectedView = viewDirection - normal * nDotV;
+        float azimuth = 0.0;
+        if (dot(projectedLight, projectedLight) > 1e-8 &&
+            dot(projectedView, projectedView) > 1e-8) {
+            azimuth = max(dot(normalize(projectedLight),
+                              normalize(projectedView)), 0.0);
+        }
+        float sinLight = sqrt(max(1.0 - nDotL * nDotL, 0.0));
+        float sinView = sqrt(max(1.0 - nDotV * nDotV, 0.0));
+        float sinAlpha = max(sinLight, sinView);
+        float tanBeta = min(sinLight / max(nDotL, 1e-5),
+                            sinView / max(nDotV, 1e-5));
+        return vec3(nDotL * (a + b * azimuth * sinAlpha * tanBeta) /
+            3.14159265359);
+    }
+    if (model == 2u) {
+        vec3 halfway = normalize(viewDirection + lightDirection);
+        float lDotH = max(dot(lightDirection, halfway), 0.0);
+        float grazing = 0.5 + 2.0 * clamp(roughness, 0.0, 1.0) *
+            lDotH * lDotH;
+        float lightScatter = 1.0 + (grazing - 1.0) *
+            pow(1.0 - nDotL, 5.0);
+        float viewScatter = 1.0 + (grazing - 1.0) *
+            pow(1.0 - nDotV, 5.0);
+        return vec3(nDotL * lightScatter * viewScatter / 3.14159265359);
+    }
+    if (model == 3u) {
+        const float c1 = 0.2877934092;
+        const float c2 = 0.0726760455;
+        float sigma = clamp(roughness, 0.0, 1.0);
+        float a = 1.0 / (1.0 + c1 * sigma);
+        float s = dot(lightDirection, viewDirection) - nDotL * nDotV;
+        float sOverT = s > 0.0 ? s / max(nDotL, nDotV) : s;
+        float singleScatter = a * (1.0 + sigma * sOverT);
+        float averageAlbedo = (1.0 + c2 * sigma) /
+            (1.0 + c1 * sigma);
+        float outgoingAlbedo = eonDirectionalAlbedo(nDotV, sigma);
+        float incidentAlbedo = eonDirectionalAlbedo(nDotL, sigma);
+        float directionalFactor =
+            (1.0 - outgoingAlbedo) * (1.0 - incidentAlbedo) /
+            max(1.0 - averageAlbedo, 1e-5);
+        vec3 rho = clamp(diffuseColor, vec3(0.0), vec3(0.9999));
+        vec3 multipleScatterOverRho = rho * averageAlbedo /
+            max(vec3(1.0) - rho * (1.0 - averageAlbedo), vec3(1e-5));
+        return nDotL / 3.14159265359 *
+            (vec3(singleScatter) + multipleScatterOverRho * directionalFactor);
+    }
+    return vec3(nDotL / 3.14159265359);
+}
+
 vec3 evaluateDirectSurface(
     vec3 normal, vec3 tangent, vec3 viewDirection, vec3 lightDirection,
     vec3 diffuseColor, float transmission, float subsurface,
+    float diffuseWeight, float diffuseRoughness, uint diffuseModel,
     float metalness, vec2 roughness, vec3 f0,
     float coat, vec2 coatRoughness, vec3 coatF0,
     float sheen, vec3 sheenColor, float sheenRoughness, bool sheenZeltner,
@@ -684,9 +764,13 @@ vec3 evaluateDirectSurface(
     vec3 halfway = normalize(viewDirection + lightDirection);
     vec3 baseFresnel = fresnelSchlick(
         max(dot(viewDirection, halfway), 0.0), f0);
+    vec3 diffuseResponse = mix(evaluateDiffuseReflection(
+        normal, viewDirection, lightDirection, diffuseColor,
+        diffuseRoughness, diffuseModel),
+        vec3(wrappedNdotL / 3.14159265359), subsurface);
     vec3 diffuse = diffuseScale * (vec3(1.0) - baseFresnel) *
-        (1.0 - metalness) * diffuseColor *
-        (wrappedNdotL / 3.14159265359) * (1.0 - transmission);
+        diffuseWeight * (1.0 - metalness) * diffuseColor *
+        diffuseResponse * (1.0 - transmission);
     vec3 specular = specularScale * nDotL * evaluateGGXAnisotropic(
         normal, tangent, viewDirection, lightDirection, roughness, f0);
     vec3 coatFresnel = vec3(0.0);
@@ -941,6 +1025,13 @@ void main()
             material.textureIndices0.z, surfaceUv,
             vec4(material.emissionRoughness.a, material.subsurfaceColor.w,
                  0.0, 1.0)).rg, vec2(0.02), vec2(1.0));
+        float diffuseRoughness = clamp(sampleMaterialTexture(
+            material.textureIndices4.z, surfaceUv,
+            vec4(material.diffuseProperties.x)).r, 0.0, 1.0);
+        float diffuseWeight = clamp(sampleMaterialTexture(
+            material.textureIndices4.w, surfaceUv,
+            vec4(material.diffuseProperties.z)).r, 0.0, 1.0);
+        uint diffuseModel = uint(material.diffuseProperties.y + 0.5);
         normal = applyNormalMap(material.textureIndices1.y,
                                 material.coatWeightRoughnessIor.w > 0.5,
                                 material.subsurfaceWeightScale.w,
@@ -1059,7 +1150,7 @@ void main()
             max(dot(normal, viewDirection), 0.0), f0);
         vec3 specularContribution = baseFresnel;
         vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
-            (1.0 - metalness) * diffuseColor;
+            diffuseWeight * (1.0 - metalness) * diffuseColor;
         float specularEnergy = luminance(specularContribution);
         float diffuseEnergy = luminance(diffuseContribution);
         float specularProbability = clamp(
@@ -1110,7 +1201,8 @@ R"glsl(
             if (inversePdf > 0.0) {
                 vec3 direct = evaluateDirectSurface(
                     normal, tangent, viewDirection, lightDirection,
-                    diffuseColor, transmission, subsurface, metalness,
+                    diffuseColor, transmission, subsurface,
+                    diffuseWeight, diffuseRoughness, diffuseModel, metalness,
                     roughness, f0, coat, coatRoughness, coatF0,
                     sheen, sheenColor, sheenRoughness, sheenZeltner,
                     light.controls.x, light.controls.y);
@@ -1146,7 +1238,8 @@ R"glsl(
                 up * 0.9659258 + azimuth * 0.2588190);
             vec3 direct = evaluateDirectSurface(
                 normal, tangent, viewDirection, sunDirection, diffuseColor,
-                transmission, subsurface, metalness, roughness, f0,
+                transmission, subsurface, diffuseWeight, diffuseRoughness,
+                diffuseModel, metalness, roughness, f0,
                 coat, coatRoughness, coatF0,
                 sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 1.0);
             if (any(greaterThan(direct, vec3(0.0)))) {
@@ -1163,7 +1256,8 @@ R"glsl(
             vec3 skyDirection = cosineHemisphere(normal, rng);
             vec3 skyDirect = evaluateDirectSurface(
                 normal, tangent, viewDirection, skyDirection, diffuseColor,
-                transmission, subsurface, metalness, roughness, f0,
+                transmission, subsurface, diffuseWeight, diffuseRoughness,
+                diffuseModel, metalness, roughness, f0,
                 coat, coatRoughness, coatF0,
                 sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 0.0);
             if (any(greaterThan(skyDirect, vec3(0.0)))) {
@@ -1284,6 +1378,12 @@ R"glsl(
                         }
                     }
                     rayDirection = cosineHemisphere(normal, rng);
+                    float lambertResponse = max(dot(normal, rayDirection), 0.0) /
+                        3.14159265359;
+                    throughput *= evaluateDiffuseReflection(
+                        normal, viewDirection, rayDirection, diffuseColor,
+                        diffuseRoughness, diffuseModel) /
+                        max(lambertResponse, 1e-6);
                 }
             }
         }
@@ -1341,6 +1441,7 @@ struct GpuMaterial {
     std::array<float, 4> transmissionMedium;
     std::array<float, 4> transmissionScatter;
     std::array<float, 4> sheenColorMode;
+    std::array<float, 4> diffuseProperties;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
@@ -1797,8 +1898,8 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v11." + modeName;
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v7." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v14." + modeName;
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v10." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
             options.optimization = GlslCompileOptions::Optimization::None;
@@ -2005,6 +2106,7 @@ public:
                 {0.0F, 0.0F, 0.0F, 20.0F},
                 {0.0F, 0.0F, 0.0F, 0.0F},
                 {1.0F, 1.0F, 1.0F, 0.0F},
+                {0.0F, 0.0F, 1.0F, 0.0F},
                 {kMissingTexture, kMissingTexture,
                  kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
@@ -2053,6 +2155,9 @@ public:
                  material.transmissionScatter[2], material.sheenRoughness},
                 {material.sheenColor[0], material.sheenColor[1],
                  material.sheenColor[2], static_cast<float>(material.sheenMode)},
+                {material.diffuseRoughness,
+                 static_cast<float>(material.diffuseModel),
+                 material.diffuseWeight, 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
@@ -2071,7 +2176,8 @@ public:
                  textureIndex(material.coatColorTexture)},
                 {textureIndex(material.coatRoughnessTexture),
                  textureIndex(material.sheenRoughnessTexture),
-                 kMissingTexture, kMissingTexture},
+                 textureIndex(material.diffuseRoughnessTexture),
+                 textureIndex(material.diffuseWeightTexture)},
             });
         }
         std::map<std::array<float, 3>, std::uint32_t> displayColorMaterials;

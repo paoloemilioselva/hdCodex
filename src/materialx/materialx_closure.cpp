@@ -815,8 +815,34 @@ private:
 
         if (node.category == "oren_nayar_diffuse_bsdf" ||
             node.category == "burley_diffuse_bsdf") {
+            AssignScalar(evaluator.InputOr(node, "weight", "float", "1"),
+                         material.diffuseWeight,
+                         material.diffuseWeightTexture,
+                         node, "diffuse weight");
             AssignColor(evaluator.Input(node, "color"), material.baseColor,
                         material.baseColorTexture, node, "diffuse color");
+            AssignScalar(evaluator.InputOr(node, "roughness", "float", "0"),
+                         material.diffuseRoughness,
+                         material.diffuseRoughnessTexture,
+                         node, "diffuse roughness");
+            material.diffuseModel = node.category == "burley_diffuse_bsdf"
+                ? SceneMaterial::DiffuseModel::Burley
+                : SceneMaterial::DiffuseModel::OrenNayar;
+            if (node.category == "oren_nayar_diffuse_bsdf") {
+                const Value compensation = evaluator.InputOr(
+                    node, "energy_compensation", "boolean", "false");
+                if (compensation.kind != Value::Kind::Numeric) {
+                    throw std::runtime_error(NodeError(
+                        node, "has dynamic energy compensation"));
+                }
+                if (NumericIs(compensation, 1.0F)) {
+                    material.diffuseModel =
+                        SceneMaterial::DiffuseModel::OrenNayarEnergyCompensated;
+                } else if (!NumericIs(compensation, 0.0F)) {
+                    throw std::runtime_error(NodeError(
+                        node, "has invalid energy compensation"));
+                }
+            }
             CaptureNormal(node);
             return;
         }

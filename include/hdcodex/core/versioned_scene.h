@@ -33,6 +33,13 @@ struct SceneMesh {
 };
 
 struct SceneMaterial {
+    enum class DiffuseModel : std::uint32_t {
+        Lambert = 0U,
+        OrenNayar = 1U,
+        Burley = 2U,
+        OrenNayarEnergyCompensated = 3U,
+    };
+
     struct GeneratedInput {
         std::string name;
         std::string type;
@@ -112,6 +119,9 @@ struct SceneMaterial {
     std::array<float, 3> sheenColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> subsurfaceColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> subsurfaceRadius{1.0F, 0.2F, 0.1F};
+    DiffuseModel diffuseModel{DiffuseModel::Lambert};
+    float diffuseWeight{1.0F};
+    float diffuseRoughness{0.0F};
     float metalness{0.0F};
     float roughness{0.5F};
     float roughnessV{0.5F};
@@ -144,6 +154,8 @@ struct SceneMaterial {
     std::string baseColorTexture;
     std::string metalnessTexture;
     std::string roughnessTexture;
+    std::string diffuseWeightTexture;
+    std::string diffuseRoughnessTexture;
     std::string emissionTexture;
     std::string opacityTexture;
     std::string normalTexture;

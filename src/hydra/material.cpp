@@ -155,7 +155,9 @@ void AttachGeneratedProgram(
     };
     for (std::string* texture : {
              &material.baseColorTexture, &material.metalnessTexture,
-             &material.roughnessTexture, &material.emissionTexture,
+             &material.roughnessTexture, &material.diffuseWeightTexture,
+             &material.diffuseRoughnessTexture,
+             &material.emissionTexture,
              &material.opacityTexture, &material.normalTexture,
              &material.transmissionTexture, &material.specularTexture,
              &material.specularColorTexture, &material.coatTexture,

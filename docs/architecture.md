@@ -66,8 +66,11 @@ evaluation for primary, continuation, and shadow rays. Materials also skip
 inactive transmission, subsurface, and coat work.
 
 The production integrator traces up to eight bounces (with a twelve-bounce GPU
-limit) and evaluates Lambert diffuse plus dielectric, metal, and layered-coat
-GGX reflection. It transports correlated sampled wavelengths, reconstructs
+limit) and evaluates Lambert, qualitative and energy-preserving Oren-Nayar, and
+Burley diffuse plus dielectric, metal, and layered-coat GGX reflection.
+Rough-diffuse direct evaluation and cosine-proposal indirect weights use the
+primitive, weight, and roughness selected by the expanded MaterialX graph. It
+transports correlated sampled wavelengths, reconstructs
 authored RGB inputs into spectra, and integrates CIE XYZ only at the camera. It
 uploads as many as 64
 visible UsdLux DomeLight and RectLight records with their color temperature,

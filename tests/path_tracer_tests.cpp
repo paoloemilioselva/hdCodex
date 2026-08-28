@@ -164,6 +164,25 @@ try {
           "path tracer did not sample the bound base-color texture");
     Check(pixels[center + 3] == 1.0F, "path tracer alpha is not one");
 
+    scene->materials.front().diffuseModel =
+        hdcodex::SceneMaterial::DiffuseModel::OrenNayar;
+    scene->materials.front().diffuseRoughness = 0.85F;
+    tracer.SetScene(scene);
+    const auto roughDiffuse = renderSamples(64U);
+    float roughDiffuseDifference = 0.0F;
+    for (std::size_t index = 0; index < roughDiffuse.size(); index += 4U) {
+        roughDiffuseDifference +=
+            std::abs(roughDiffuse[index] - pixels[index]) +
+            std::abs(roughDiffuse[index + 1U] - pixels[index + 1U]) +
+            std::abs(roughDiffuse[index + 2U] - pixels[index + 2U]);
+    }
+    Check(roughDiffuseDifference > 0.05F,
+          "MaterialX Oren-Nayar roughness did not affect GPU shading");
+    scene->materials.front().diffuseModel =
+        hdcodex::SceneMaterial::DiffuseModel::Lambert;
+    scene->materials.front().diffuseRoughness = 0.0F;
+    tracer.SetScene(scene);
+
     scene->meshes.front().texcoords = {
         1.1F, 0.1F, 1.9F, 0.1F, 1.5F, 0.9F,
     };

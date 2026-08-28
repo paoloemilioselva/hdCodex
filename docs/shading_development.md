@@ -202,6 +202,7 @@ generated architecture.
 | Arbitrary value/procedural graphs | Graph-backed helpers are recursively expanded; supported constants, direct images, channel-reconstructed normals, conditionals, luminance, clamp, combine, and arithmetic execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
 | OpenPBR and Standard Surface | High-level NodeGraphs are expanded generically; supported primitive closure subsets compile without shader-name special cases |
 | USD Preview Surface | USD-native networks are rejected; genuinely MaterialX-authored variants follow normal NodeGraph expansion and closure capability checks |
+| Diffuse reflection | Lambert, qualitative and energy-preserving Oren-Nayar, and Burley primitives with constant or texture-driven weight/roughness; cosine-proposal indirect sampling |
 | Dielectric reflection | Partial IOR, Schlick Fresnel, and GGX reflection |
 | Dielectric transmission | Refraction, total internal reflection, thin-wall pass-through, absorption, and homogeneous scattering; no rough microfacet BTDF |
 | Conductors | Metallic base color used as F0; no complete conductor/complex-IOR semantics |
@@ -333,6 +334,9 @@ labeled as a lighting preview rather than a path-transport reference.
 
 ### Phase 3: complete PBR closure coverage
 
+- Implemented: MaterialX qualitative and energy-preserving Oren-Nayar plus
+  Burley rough-diffuse evaluation, texture-driven weight/roughness, and matching
+  indirect sample weights.
 - OpenPBR 1.1: complete fuzz reference sampling, independent normal/tangent
   frames, thin film, rough microfacet transmission, thin-wall
   behavior, reference layers, and energy compensation.

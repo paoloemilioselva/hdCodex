@@ -170,8 +170,9 @@ try {
     constexpr auto primitiveClosureXml = R"mtlx(<?xml version="1.0"?>
 <materialx version="1.39">
   <oren_nayar_diffuse_bsdf name="diffuse" type="BSDF">
+    <input name="weight" type="float" value="0.6"/>
     <input name="color" type="color3" value="0.2, 0.4, 0.6"/>
-    <input name="roughness" type="float" value="0"/>
+    <input name="roughness" type="float" value="0.35"/>
   </oren_nayar_diffuse_bsdf>
   <uniform_edf name="emission" type="EDF">
     <input name="color" type="color3" value="0.01, 0.02, 0.03"/>
@@ -190,8 +191,33 @@ try {
     Check(primitiveClosure.closure &&
               std::abs(primitiveClosure.closure->baseColor[1] - 0.4F) < 1e-5F &&
               std::abs(primitiveClosure.closure->emission[2] - 0.03F) < 1e-5F &&
-              std::abs(primitiveClosure.closure->opacity - 0.75F) < 1e-5F,
+              std::abs(primitiveClosure.closure->opacity - 0.75F) < 1e-5F &&
+              std::abs(primitiveClosure.closure->diffuseWeight - 0.6F) < 1e-5F &&
+              std::abs(primitiveClosure.closure->diffuseRoughness - 0.35F) < 1e-5F &&
+              primitiveClosure.closure->diffuseModel ==
+                  hdcodex::SceneMaterial::DiffuseModel::OrenNayar,
           "primitive MaterialX closure did not drive the renderer ABI");
+
+    constexpr auto burleyDiffuseXml = R"mtlx(<?xml version="1.0"?>
+<materialx version="1.39">
+  <burley_diffuse_bsdf name="diffuse" type="BSDF">
+    <input name="color" type="color3" value="0.7, 0.5, 0.3"/>
+    <input name="roughness" type="float" value="0.65"/>
+  </burley_diffuse_bsdf>
+  <surface name="surface" type="surfaceshader">
+    <input name="bsdf" type="BSDF" nodename="diffuse"/>
+  </surface>
+  <surfacematerial name="material" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface"/>
+  </surfacematerial>
+</materialx>)mtlx";
+    const auto burleyDiffuse = compiler.CompileXml(
+        burleyDiffuseXml, "burley_diffuse_test");
+    Check(burleyDiffuse.closure &&
+              burleyDiffuse.closure->diffuseModel ==
+                  hdcodex::SceneMaterial::DiffuseModel::Burley &&
+              std::abs(burleyDiffuse.closure->diffuseRoughness - 0.65F) < 1e-5F,
+          "MaterialX Burley diffuse primitive lost its model or roughness");
 
     const hdcodex::MaterialXGeneratedProgram endpointMetalProgram{
         .outputNode = "surface",
