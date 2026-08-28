@@ -213,7 +213,7 @@ generated architecture.
 | Volume terminals | Unsupported; only one homogeneous interior transmission medium is tracked |
 | Caustics | Incidental and very inefficient for environment paths; no robust caustics from analytic lights |
 | Emission | Visible surface emission without emissive-geometry importance sampling or MIS |
-| Lights | Hydra DomeLight and RectLight only; dome sampling is uniform rather than texture-importance sampled |
+| Lights | Hydra DomeLight and RectLight only; power-heuristic MIS combines authored-dome NEE with non-delta BSDF paths, but dome directions remain uniform rather than texture-importance sampled |
 | Geometry shaders | Displacement unsupported; subdivision uses coarse topology |
 | Hair | Hair BSDF and curve geometry unsupported |
 | Textures | Fixed repeat addressing, base mip only, no ray differentials, limited UDIM range, and role-based rather than graph-authored color handling |
@@ -245,8 +245,8 @@ complete thin-walled behavior.
 MaterialX graph conformance does not by itself provide complete light transport.
 The renderer also needs:
 
-- consistent BSDF/light multiple-importance sampling;
 - importance-sampled environment maps and emissive geometry;
+- MIS coverage for emissive geometry and future analytic light representations;
 - robust caustic transport;
 - nested IOR and medium stacks;
 - heterogeneous and emissive volumes;
@@ -345,8 +345,11 @@ labeled as a lighting preview rather than a path-transport reference.
 
 ### Phase 4: direct lighting and MIS
 
+- Implemented: power-heuristic MIS between authored-dome next-event samples
+  and non-delta diffuse, sheen, coat, and anisotropic-GGX continuation paths.
 - Power/texture-importance sampling for dome lights and emissive geometry.
-- Balance or power-heuristic BSDF/light MIS for every non-delta event.
+- Extend BSDF/light MIS to emissive geometry and every future non-delta light
+  representation.
 - Complete Hydra analytic light types, shaping, visibility, and light linking.
 - Consistent spectral/RGB policy between generated closures and light sampling.
 

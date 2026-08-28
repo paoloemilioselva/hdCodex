@@ -354,6 +354,48 @@ vec3 ggxSampleWeightAnisotropic(vec3 incident, vec3 outgoing, vec3 normal,
         normal, tangent, viewDirection, outgoing, roughness, f0) *
         nDotL / max(pdf, 1e-6);
 }
+)glsl"
+R"glsl(
+
+float ggxReflectionPdfAnisotropic(vec3 normal, vec3 tangent,
+                                  vec3 viewDirection, vec3 lightDirection,
+                                  vec2 roughness)
+{
+    if (dot(normal, viewDirection) <= 0.0 ||
+        dot(normal, lightDirection) <= 0.0) return 0.0;
+    vec3 halfway = normalize(viewDirection + lightDirection);
+    float nDotH = max(dot(normal, halfway), 0.0);
+    float vDotH = max(dot(viewDirection, halfway), 0.0);
+    return distributionGGXAnisotropic(
+        halfway, normal, tangent, roughness) * nDotH /
+        max(4.0 * vDotH, 1e-6);
+}
+
+float powerHeuristic(float firstPdf, float secondPdf)
+{
+    float firstSquared = firstPdf * firstPdf;
+    float secondSquared = secondPdf * secondPdf;
+    return firstSquared / max(firstSquared + secondSquared, 1e-12);
+}
+
+float surfaceReflectionPdf(
+    vec3 normal, vec3 tangent, vec3 viewDirection, vec3 lightDirection,
+    vec2 roughness, vec2 coatRoughness,
+    float sheenProbability, float coatProbability, float specularProbability)
+{
+    float cosinePdf = max(dot(normal, lightDirection), 0.0) /
+        3.14159265359;
+    float coatPdf = ggxReflectionPdfAnisotropic(
+        normal, tangent, viewDirection, lightDirection, coatRoughness);
+    float specularPdf = ggxReflectionPdfAnisotropic(
+        normal, tangent, viewDirection, lightDirection, roughness);
+    float basePdf = coatProbability * coatPdf +
+        (1.0 - coatProbability) *
+        (specularProbability * specularPdf +
+         (1.0 - specularProbability) * cosinePdf);
+    return sheenProbability * cosinePdf +
+        (1.0 - sheenProbability) * basePdf;
+}
 
 float sheenDirectionalAlbedo(float nDotV, float roughness)
 {
@@ -492,6 +534,18 @@ vec3 environment(vec3 direction)
         }
     }
     return result;
+}
+
+float environmentLightPdf()
+{
+    uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+    if (lightCount == 0u) return 0.0;
+    uint domeCount = 0u;
+    for (uint index = 0u; index < lightCount; ++index) {
+        if (lights[index].textureInfo.z == 0u) ++domeCount;
+    }
+    return float(domeCount) /
+        (float(lightCount) * 12.5663706144);
 }
 
 vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
@@ -797,6 +851,8 @@ void main()
     vec3 throughput = vec3(1.0);
     vec3 radiance = vec3(0.0);
     bool environmentOnMiss = true;
+    bool previousWasDelta = true;
+    float previousBsdfPdf = 0.0;
     bool insideMedium = false;
     float mediumAbsorption = 0.0;
     float mediumScattering = 0.0;
@@ -826,7 +882,9 @@ void main()
             gl_RayQueryCommittedIntersectionNoneEXT)
         {
             if (environmentOnMiss) {
-                radiance += throughput * vec3(illuminantSpectrum(
+                float misWeight = previousWasDelta ? 1.0 : powerHeuristic(
+                    previousBsdfPdf, environmentLightPdf());
+                radiance += throughput * misWeight * vec3(illuminantSpectrum(
                     environment(rayDirection), wavelength));
             }
             break;
@@ -864,6 +922,8 @@ void main()
                     rayDirection = sampleHenyeyGreenstein(
                         rayDirection, mediumAnisotropy, rng);
                     environmentOnMiss = true;
+                    previousWasDelta = true;
+                    previousBsdfPdf = 0.0;
                     continue;
                 }
             }
@@ -983,6 +1043,28 @@ void main()
         bool sheenZeltner = material.sheenColorMode.w > 0.5;
 
         vec3 viewDirection = normalize(-rayDirection);
+        float sheenAlbedo = sheenZeltner
+            ? sheenZeltnerDirectionalAlbedo(
+                max(dot(normal, viewDirection), 0.0), sheenRoughness)
+            : sheenDirectionalAlbedo(
+                max(dot(normal, viewDirection), 0.0), sheenRoughness);
+        float sheenProbability = clamp(
+            sheen * sheenAlbedo * luminance(sheenColor), 0.0, 0.95);
+        vec3 coatContribution = coat > 0.0
+            ? coat * fresnelSchlick(
+                max(dot(normal, viewDirection), 0.0), coatF0)
+            : vec3(0.0);
+        float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
+        vec3 baseFresnel = fresnelSchlick(
+            max(dot(normal, viewDirection), 0.0), f0);
+        vec3 specularContribution = baseFresnel;
+        vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
+            (1.0 - metalness) * diffuseColor;
+        float specularEnergy = luminance(specularContribution);
+        float diffuseEnergy = luminance(diffuseContribution);
+        float specularProbability = clamp(
+            specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
+            0.05, 0.95);
         uint lightCount = (camera.frame.w >> 16u) & 0xffu;
 )glsl"
 R"glsl(
@@ -1026,15 +1108,12 @@ R"glsl(
                 }
             }
             if (inversePdf > 0.0) {
-                float sampledSpecularScale =
-                    light.textureInfo.z == 0u && max(roughness.x, roughness.y) < 0.2
-                    ? 0.0 : light.controls.y;
                 vec3 direct = evaluateDirectSurface(
                     normal, tangent, viewDirection, lightDirection,
                     diffuseColor, transmission, subsurface, metalness,
                     roughness, f0, coat, coatRoughness, coatF0,
                     sheen, sheenColor, sheenRoughness, sheenZeltner,
-                    light.controls.x, sampledSpecularScale);
+                    light.controls.x, light.controls.y);
                 if (any(greaterThan(direct, vec3(0.0)))) {
                     vec3 visibility = shadowVisibility(
                         hit + orientedGeometricNormal * 0.002,
@@ -1043,8 +1122,16 @@ R"glsl(
                         lightRadiance, wavelength));
                     vec3 spectralVisibility = vec3(reflectanceSpectrum(
                         visibility, wavelength));
+                    float misWeight = light.textureInfo.z == 0u
+                        ? powerHeuristic(environmentLightPdf(),
+                            surfaceReflectionPdf(
+                                normal, tangent, viewDirection, lightDirection,
+                                roughness, coatRoughness, sheenProbability,
+                                coatProbability, specularProbability))
+                        : 1.0;
                     radiance += throughput * direct * spectralLight *
-                        spectralVisibility * inversePdf * float(lightCount);
+                        spectralVisibility * inversePdf * float(lightCount) *
+                        misWeight;
                 }
             }
         } else {
@@ -1132,18 +1219,13 @@ R"glsl(
             }
             rayOrigin = hit + rayDirection * 0.002;
             environmentOnMiss = true;
+            previousWasDelta = true;
+            previousBsdfPdf = 0.0;
             continue;
         }
 
         environmentOnMiss = false;
         rayOrigin = hit + orientedGeometricNormal * 0.002;
-        float sheenAlbedo = sheenZeltner
-            ? sheenZeltnerDirectionalAlbedo(
-                max(dot(normal, viewDirection), 0.0), sheenRoughness)
-            : sheenDirectionalAlbedo(
-                max(dot(normal, viewDirection), 0.0), sheenRoughness);
-        float sheenProbability = clamp(
-            sheen * sheenAlbedo * luminance(sheenColor), 0.0, 0.95);
         if (sheenProbability > 0.0 && randomFloat(rng) < sheenProbability) {
             rayDirection = cosineHemisphere(normal, rng);
             float sheenPdf = max(dot(normal, rayDirection), 0.0) /
@@ -1157,11 +1239,6 @@ R"glsl(
         } else {
             throughput *= (1.0 - sheen * sheenAlbedo) /
                 max(1.0 - sheenProbability, 1e-4);
-            vec3 coatContribution = coat > 0.0
-                ? coat * fresnelSchlick(
-                    max(dot(normal, viewDirection), 0.0), coatF0)
-                : vec3(0.0);
-            float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
             if (coatProbability > 0.0 && randomFloat(rng) < coatProbability) {
                 vec3 incident = rayDirection;
                 rayDirection = sampleGGXReflectionAnisotropic(
@@ -1173,16 +1250,6 @@ R"glsl(
             } else {
                 throughput *= (vec3(1.0) - coatContribution) /
                     max(1.0 - coatProbability, 1e-4);
-                vec3 baseFresnel = fresnelSchlick(
-                    max(dot(normal, viewDirection), 0.0), f0);
-                vec3 specularContribution = baseFresnel;
-                vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
-                    (1.0 - metalness) * diffuseColor;
-                float specularEnergy = luminance(specularContribution);
-                float diffuseEnergy = luminance(diffuseContribution);
-                float specularProbability = clamp(
-                    specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
-                    0.05, 0.95);
                 if (randomFloat(rng) < specularProbability) {
                     vec3 incident = rayDirection;
                     rayDirection = sampleGGXReflectionAnisotropic(
@@ -1211,12 +1278,22 @@ R"glsl(
                             rayOrigin = exitOrigin;
                             rayDirection = exitDirection;
                             environmentOnMiss = true;
+                            previousWasDelta = true;
+                            previousBsdfPdf = 0.0;
                             continue;
                         }
                     }
                     rayDirection = cosineHemisphere(normal, rng);
                 }
             }
+        }
+        if (lightCount > 0u) {
+            previousBsdfPdf = surfaceReflectionPdf(
+                normal, tangent, viewDirection, rayDirection,
+                roughness, coatRoughness, sheenProbability,
+                coatProbability, specularProbability);
+            previousWasDelta = false;
+            environmentOnMiss = true;
         }
         if (bounce >= 2) {
             float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
@@ -1720,7 +1797,7 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v10." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v11." + modeName;
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v7." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
