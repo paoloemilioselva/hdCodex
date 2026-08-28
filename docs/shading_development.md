@@ -214,7 +214,7 @@ generated architecture.
 | Volume terminals | Unsupported; only one homogeneous interior transmission medium is tracked |
 | Caustics | Incidental and very inefficient for environment paths; no robust caustics from analytic lights |
 | Emission | Visible surface emission without emissive-geometry importance sampling or MIS |
-| Lights | Hydra DomeLight and RectLight only; power-heuristic MIS combines authored-dome NEE with non-delta BSDF paths, but dome directions remain uniform rather than texture-importance sampled |
+| Lights | Hydra DomeLight and RectLight only; power-heuristic MIS combines authored-dome NEE with non-delta BSDF paths, and automatic/lat-long domes use luminance/solid-angle texture importance sampling; other projections retain uniform sampling |
 | Geometry shaders | Displacement unsupported; subdivision uses coarse topology |
 | Hair | Hair BSDF and curve geometry unsupported |
 | Textures | Fixed repeat addressing, base mip only, no ray differentials, limited UDIM range, and role-based rather than graph-authored color handling |
@@ -351,7 +351,9 @@ labeled as a lighting preview rather than a path-transport reference.
 
 - Implemented: power-heuristic MIS between authored-dome next-event samples
   and non-delta diffuse, sheen, coat, and anisotropic-GGX continuation paths.
-- Power/texture-importance sampling for dome lights and emissive geometry.
+- Implemented: luminance/solid-angle texture-importance sampling for automatic
+  and lat-long dome lights, with matching direct and continuation-path PDFs.
+- Power sampling across lights and importance sampling for emissive geometry.
 - Extend BSDF/light MIS to emissive geometry and every future non-delta light
   representation.
 - Complete Hydra analytic light types, shaping, visibility, and light linking.

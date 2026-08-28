@@ -11,8 +11,10 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace hdcodex {
 namespace {
@@ -537,16 +539,98 @@ vec3 environment(vec3 direction)
     return result;
 }
 
-float environmentLightPdf()
+vec3 latLongDirection(vec2 uv)
+{
+    const float pi = 3.14159265359;
+    float theta = pi * (1.0 - uv.y);
+    float phi = 2.0 * pi * uv.x;
+    float sineTheta = sin(theta);
+    return vec3(sineTheta * sin(phi), cos(theta),
+                -sineTheta * cos(phi));
+}
+
+vec3 uniformSphere(inout uint state);
+
+float domeLightPdf(GpuLight light, vec3 worldDirection)
+{
+    if (light.textureInfo.w == 0xffffffffu) return 1.0 / 12.5663706144;
+    vec3 localDirection = normalize(vec3(
+        dot(worldDirection, light.basisX.xyz),
+        dot(worldDirection, light.basisY.xyz),
+        dot(worldDirection, light.basisZ.xyz)));
+    vec2 uv = domeTextureCoordinates(localDirection, light.textureInfo.y);
+    uint importanceIndex = light.textureInfo.w;
+    ivec2 dimensions = textureSize(
+        materialTextures[nonuniformEXT(importanceIndex)], 0);
+    ivec2 texel = clamp(ivec2(uv * vec2(dimensions)),
+                        ivec2(0), dimensions - ivec2(1));
+    return max(texelFetch(materialTextures[nonuniformEXT(importanceIndex)],
+                          texel, 0).b, 0.0);
+}
+
+void sampleDomeLight(GpuLight light, inout uint rng,
+                     out vec3 worldDirection, out float pdf)
+{
+    if (light.textureInfo.w == 0xffffffffu) {
+        worldDirection = uniformSphere(rng);
+        pdf = 1.0 / 12.5663706144;
+        return;
+    }
+    uint importanceIndex = light.textureInfo.w;
+    ivec2 dimensions = textureSize(
+        materialTextures[nonuniformEXT(importanceIndex)], 0);
+    float rowTarget = randomFloat(rng);
+    int low = 0;
+    int high = dimensions.y - 1;
+    while (low < high) {
+        int middle = (low + high) / 2;
+        float cdf = texelFetch(
+            materialTextures[nonuniformEXT(importanceIndex)],
+            ivec2(0, middle), 0).g;
+        if (rowTarget <= cdf) high = middle;
+        else low = middle + 1;
+    }
+    int row = low;
+    float columnTarget = randomFloat(rng);
+    low = 0;
+    high = dimensions.x - 1;
+    while (low < high) {
+        int middle = (low + high) / 2;
+        float cdf = texelFetch(
+            materialTextures[nonuniformEXT(importanceIndex)],
+            ivec2(middle, row), 0).r;
+        if (columnTarget <= cdf) high = middle;
+        else low = middle + 1;
+    }
+    int column = low;
+    const float pi = 3.14159265359;
+    float v0 = float(row) / float(dimensions.y);
+    float v1 = float(row + 1) / float(dimensions.y);
+    float cosine0 = cos(pi * (1.0 - v0));
+    float cosine1 = cos(pi * (1.0 - v1));
+    float cosineTheta = mix(cosine0, cosine1, randomFloat(rng));
+    float v = 1.0 - acos(clamp(cosineTheta, -1.0, 1.0)) / pi;
+    float u = (float(column) + randomFloat(rng)) / float(dimensions.x);
+    vec3 localDirection = latLongDirection(vec2(u, v));
+    worldDirection = normalize(
+        light.basisX.xyz * localDirection.x +
+        light.basisY.xyz * localDirection.y +
+        light.basisZ.xyz * localDirection.z);
+    pdf = max(texelFetch(materialTextures[nonuniformEXT(importanceIndex)],
+                         ivec2(column, row), 0).b, 0.0);
+}
+
+float environmentLightPdf(vec3 direction)
 {
     uint lightCount = (camera.frame.w >> 16u) & 0xffu;
     if (lightCount == 0u) return 0.0;
-    uint domeCount = 0u;
+    float pdf = 0.0;
     for (uint index = 0u; index < lightCount; ++index) {
-        if (lights[index].textureInfo.z == 0u) ++domeCount;
+        if (lights[index].textureInfo.z == 0u) {
+            pdf += domeLightPdf(lights[index], direction);
+        }
     }
-    return float(domeCount) /
-        (float(lightCount) * 12.5663706144);
+    return pdf / float(lightCount);
 }
 
 vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
@@ -967,7 +1051,7 @@ void main()
         {
             if (environmentOnMiss) {
                 float misWeight = previousWasDelta ? 1.0 : powerHeuristic(
-                    previousBsdfPdf, environmentLightPdf());
+                    previousBsdfPdf, environmentLightPdf(rayDirection));
                 radiance += throughput * misWeight * vec3(illuminantSpectrum(
                     environment(rayDirection), wavelength));
             }
@@ -1168,9 +1252,10 @@ R"glsl(
             float inversePdf = 0.0;
             float maximumShadowDistance = 10000.0;
             if (light.textureInfo.z == 0u) {
-                lightDirection = uniformSphere(rng);
+                float lightPdf = 0.0;
+                sampleDomeLight(light, rng, lightDirection, lightPdf);
                 lightRadiance = sampleDome(light, lightDirection);
-                inversePdf = 12.5663706144;
+                inversePdf = lightPdf > 0.0 ? 1.0 / lightPdf : 0.0;
             } else {
                 vec2 lightUv = vec2(randomFloat(rng), randomFloat(rng));
                 vec3 lightPosition = light.position.xyz +
@@ -1215,7 +1300,7 @@ R"glsl(
                     vec3 spectralVisibility = vec3(reflectanceSpectrum(
                         visibility, wavelength));
                     float misWeight = light.textureInfo.z == 0u
-                        ? powerHeuristic(environmentLightPdf(),
+                        ? powerHeuristic(environmentLightPdf(lightDirection),
                             surfaceReflectionPdf(
                                 normal, tangent, viewDirection, lightDirection,
                                 roughness, coatRoughness, sheenProbability,
@@ -1466,6 +1551,83 @@ struct GpuLight {
 };
 
 static_assert(sizeof(GpuLight) == 13U * 16U);
+
+float SrgbToLinear(float value)
+{
+    return value <= 0.04045F
+        ? value / 12.92F
+        : std::pow((value + 0.055F) / 1.055F, 2.4F);
+}
+
+SceneTexture BuildLatLongImportanceTexture(const SceneTexture& source)
+{
+    SceneTexture result;
+    if (source.width == 0U || source.height == 0U ||
+        (source.rgba.empty() && source.rgbaFloat.empty())) {
+        return result;
+    }
+
+    const std::size_t pixelCount = static_cast<std::size_t>(source.width) *
+        static_cast<std::size_t>(source.height);
+    std::vector<float> luminance(pixelCount, 0.0F);
+    std::vector<double> weights(pixelCount, 0.0);
+    std::vector<double> rowWeights(source.height, 0.0);
+    constexpr double pi = 3.14159265358979323846;
+    const double deltaPhi = 2.0 * pi / static_cast<double>(source.width);
+    double totalWeight = 0.0;
+    for (std::uint32_t y = 0U; y < source.height; ++y) {
+        const double v0 = static_cast<double>(y) / source.height;
+        const double v1 = static_cast<double>(y + 1U) / source.height;
+        const double cosine0 = std::cos(pi * (1.0 - v0));
+        const double cosine1 = std::cos(pi * (1.0 - v1));
+        const double solidAngle = deltaPhi * std::abs(cosine1 - cosine0);
+        for (std::uint32_t x = 0U; x < source.width; ++x) {
+            const std::size_t pixel = static_cast<std::size_t>(y) * source.width + x;
+            const std::size_t offset = pixel * 4U;
+            std::array<float, 3> rgb{};
+            for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                float value = !source.rgbaFloat.empty()
+                    ? source.rgbaFloat[offset + channel]
+                    : static_cast<float>(source.rgba[offset + channel]) / 255.0F;
+                if (source.rgbaFloat.empty() && source.srgb) value = SrgbToLinear(value);
+                rgb[channel] = std::isfinite(value) ? std::max(value, 0.0F) : 0.0F;
+            }
+            const float value = 0.2126F * rgb[0] + 0.7152F * rgb[1] +
+                0.0722F * rgb[2];
+            luminance[pixel] = value;
+            weights[pixel] = static_cast<double>(value) * solidAngle;
+            rowWeights[y] += weights[pixel];
+            totalWeight += weights[pixel];
+        }
+    }
+    if (!(totalWeight > 0.0) || !std::isfinite(totalWeight)) return result;
+
+    result.id = source.id + "#latlong-importance";
+    result.sourcePath = source.sourcePath;
+    result.width = source.width;
+    result.height = source.height;
+    result.rgbaFloat.resize(pixelCount * 4U);
+    double marginalCdf = 0.0;
+    for (std::uint32_t y = 0U; y < source.height; ++y) {
+        marginalCdf += rowWeights[y] / totalWeight;
+        double conditionalCdf = 0.0;
+        for (std::uint32_t x = 0U; x < source.width; ++x) {
+            const std::size_t pixel = static_cast<std::size_t>(y) * source.width + x;
+            conditionalCdf += rowWeights[y] > 0.0
+                ? weights[pixel] / rowWeights[y]
+                : 1.0 / static_cast<double>(source.width);
+            const std::size_t offset = pixel * 4U;
+            result.rgbaFloat[offset] = static_cast<float>(
+                x + 1U == source.width ? 1.0 : conditionalCdf);
+            result.rgbaFloat[offset + 1U] = static_cast<float>(
+                y + 1U == source.height ? 1.0 : marginalCdf);
+            result.rgbaFloat[offset + 2U] =
+                static_cast<float>(static_cast<double>(luminance[pixel]) / totalWeight);
+            result.rgbaFloat[offset + 3U] = 1.0F;
+        }
+    }
+    return result;
+}
 
 struct GpuTexcoord { float u, v; };
 
@@ -1898,7 +2060,7 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v14." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v15." + modeName;
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v10." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
@@ -2017,6 +2179,7 @@ public:
         std::vector<GpuMaterial> materials;
         std::vector<GpuLight> lights;
         std::map<std::string, std::uint32_t, std::less<>> textureIndices;
+        std::map<std::string, const SceneTexture*, std::less<>> textureSources;
         std::map<std::string, std::vector<const SceneTexture*>, std::less<>> udimSets;
         textures.reserve(std::min<std::size_t>(
             snapshot->textures.size(), kMaxMaterialTextures));
@@ -2026,6 +2189,7 @@ public:
                 continue;
             }
             if (textures.size() >= kMaxMaterialTextures) continue;
+            textureSources[texture.id] = &texture;
             textureIndices[texture.id] = static_cast<std::uint32_t>(textures.size());
             textures.push_back(CreateTexture(texture));
         }
@@ -2050,6 +2214,28 @@ public:
         const auto textureIndex = [&textureIndices](const std::string& id) {
             const auto found = textureIndices.find(id);
             return found == textureIndices.end() ? kMissingTexture : found->second;
+        };
+        std::map<std::string, std::uint32_t, std::less<>> domeImportanceIndices;
+        const auto domeImportanceIndex = [&](const SceneLight& light) {
+            if (light.type != SceneLightType::Dome ||
+                (light.textureFormat != DomeTextureFormat::Automatic &&
+                 light.textureFormat != DomeTextureFormat::LatLong) ||
+                textureIndex(light.texture) == kMissingTexture) {
+                return kMissingTexture;
+            }
+            const auto cached = domeImportanceIndices.find(light.texture);
+            if (cached != domeImportanceIndices.end()) return cached->second;
+            const auto source = textureSources.find(light.texture);
+            if (source == textureSources.end() ||
+                textures.size() >= kMaxMaterialTextures) {
+                return kMissingTexture;
+            }
+            SceneTexture importance = BuildLatLongImportanceTexture(*source->second);
+            if (importance.rgbaFloat.empty()) return kMissingTexture;
+            const std::uint32_t index = static_cast<std::uint32_t>(textures.size());
+            textures.push_back(CreateTexture(importance));
+            domeImportanceIndices.emplace(light.texture, index);
+            return index;
         };
 
         lights.reserve(std::min<std::size_t>(snapshot->lights.size(), kMaxLights));
@@ -2082,7 +2268,8 @@ public:
                  light.shadowColor[2], 0.0F},
                 {textureIndex(light.texture),
                  static_cast<std::uint32_t>(light.textureFormat),
-                 static_cast<std::uint32_t>(light.type), 0U},
+                 static_cast<std::uint32_t>(light.type),
+                 domeImportanceIndex(light)},
             });
         }
         lightCount = static_cast<std::uint32_t>(lights.size());

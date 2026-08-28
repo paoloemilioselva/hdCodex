@@ -88,7 +88,9 @@ asset-input and display-output format, not the path-throughput representation.
 - HDR dome textures with lat-long, mirrored-ball, angular, and vertical-cross
   layouts.
 - Power-heuristic MIS between authored-dome next-event samples and non-delta
-  BSDF continuation paths; dome directions remain uniformly sampled.
+  BSDF continuation paths. Lat-long and automatic-layout HDR domes use
+  luminance/solid-angle texture importance sampling; other projections retain
+  an unbiased uniform-direction fallback.
 - Rectangle-light transforms, textured emission, area normalization, shaping,
   diffuse/specular multipliers, and colored distance-limited shadows.
 - Stable world-space fallback sky plus a shadow-casting sun at 75° elevation
