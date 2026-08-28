@@ -165,9 +165,9 @@ roughness, emission, opacity, tangent-space normals, transmission, dielectric
 specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
 order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
 and accessed through a partially-bound descriptor array currently capped at
-256 textures. Material images and UDIM tiles are decoded to at most 512 pixels
-on their longest edge to bound CPU and GPU residency for texture-heavy scenes;
-HDR lighting textures retain their authored dimensions. UDIM sets use separate tile descriptors
+256 textures. UDIM tiles are decoded to at most 1024 pixels on their longest
+edge to bound CPU and GPU residency for texture-heavy scenes; ordinary material
+images and HDR lighting textures retain their authored dimensions. UDIM sets use separate tile descriptors
 selected from the integer UV tile, avoiding large sparse atlases; the current
 compact handle covers tiles 1001 through 1023.
 Opacity participates in primary and shadow ray-query candidate confirmation.

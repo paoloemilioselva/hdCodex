@@ -21,12 +21,11 @@ PXR_NAMESPACE_USING_DIRECTIVE
 namespace hdcodex {
 namespace {
 
-// The path tracer exposes a compact fixed material-texture table. Keeping
-// decoded material maps at the gallery/output scale avoids retaining several
-// gigabytes for large multi-material USD assets before the 256-entry GPU table
-// is built. HDR lighting textures continue to preserve their native range and
-// dimensions through preserveDynamicRange.
-constexpr int kMaxMaterialTextureDimension = 512;
+// Only UDIM tiles are residency-limited. Ordinary material images must retain
+// their authored dimensions: the StandardShaderBall detail maps are larger
+// than the gallery output and visibly lose labels and surface detail if they
+// are reduced to the output resolution.
+constexpr int kMaxUdimTextureDimension = 1024;
 
 HioImage::SourceColorSpace ToHioColorSpace(TextureColorSpace colorSpace)
 {
@@ -83,9 +82,9 @@ bool DecodeTexture(
     texture.udimTile = udimTile;
     int targetWidth = image->GetWidth();
     int targetHeight = image->GetHeight();
-    if (!preserveDynamicRange &&
-        std::max(targetWidth, targetHeight) > kMaxMaterialTextureDimension) {
-        const float scale = static_cast<float>(kMaxMaterialTextureDimension) /
+    if (!preserveDynamicRange && !udimSetId.empty() &&
+        std::max(targetWidth, targetHeight) > kMaxUdimTextureDimension) {
+        const float scale = static_cast<float>(kMaxUdimTextureDimension) /
             static_cast<float>(std::max(targetWidth, targetHeight));
         targetWidth = std::max(1, static_cast<int>(std::lround(targetWidth * scale)));
         targetHeight = std::max(1, static_cast<int>(std::lround(targetHeight * scale)));
