@@ -77,6 +77,7 @@ struct GpuLight {
     vec4 focusTint;
     vec4 shadow;
     vec4 shadowColor;
+    vec4 geometry;
     uvec4 textureInfo;
 };
 layout(std430, set = 0, binding = 10) readonly buffer Lights { GpuLight lights[]; };
@@ -1256,28 +1257,73 @@ R"glsl(
                 sampleDomeLight(light, rng, lightDirection, lightPdf);
                 lightRadiance = sampleDome(light, lightDirection);
                 inversePdf = lightPdf > 0.0 ? 1.0 / lightPdf : 0.0;
+            } else if (light.textureInfo.z == 5u) {
+                float halfAngle = 0.5 * radians(
+                    clamp(light.geometry.z, 0.0, 359.999));
+                if (halfAngle <= 1e-6) {
+                    lightDirection = normalize(light.basisZ.xyz);
+                    inversePdf = 1.0;
+                } else {
+                    float cosineMaximum = cos(halfAngle);
+                    float cosineTheta = mix(
+                        cosineMaximum, 1.0, randomFloat(rng));
+                    float sineTheta = sqrt(max(
+                        1.0 - cosineTheta * cosineTheta, 0.0));
+                    float phi = 6.28318530718 * randomFloat(rng);
+                    lightDirection = normalize(
+                        light.basisX.xyz * (cos(phi) * sineTheta) +
+                        light.basisY.xyz * (sin(phi) * sineTheta) +
+                        light.basisZ.xyz * cosineTheta);
+                    // UsdLux distant intensity is an integrated directional
+                    // source; angle changes softness without changing energy.
+                    inversePdf = 1.0;
+                }
+                lightRadiance = light.colorIntensity.rgb *
+                    light.colorIntensity.a;
             } else {
                 vec2 lightUv = vec2(randomFloat(rng), randomFloat(rng));
-                vec3 lightPosition = light.position.xyz +
-                    (lightUv.x - 0.5) * light.axisU.xyz +
-                    (lightUv.y - 0.5) * light.axisV.xyz;
+                vec3 lightPosition = light.position.xyz;
+                vec3 lightNormal = -normalize(light.basisZ.xyz);
+                if (light.textureInfo.z == 1u) {
+                    lightPosition += (lightUv.x - 0.5) * light.axisU.xyz +
+                        (lightUv.y - 0.5) * light.axisV.xyz;
+                } else if (light.textureInfo.z == 2u) {
+                    float diskRadius = sqrt(lightUv.x);
+                    float diskPhi = 6.28318530718 * lightUv.y;
+                    lightPosition += diskRadius *
+                        (cos(diskPhi) * light.axisU.xyz +
+                         sin(diskPhi) * light.axisV.xyz);
+                } else if (light.textureInfo.z == 3u) {
+                    lightNormal = uniformSphere(rng);
+                    lightPosition += light.geometry.x * lightNormal;
+                } else if (light.textureInfo.z == 4u) {
+                    float cylinderPhi = 6.28318530718 * lightUv.y;
+                    lightNormal = normalize(
+                        cos(cylinderPhi) * light.basisY.xyz +
+                        sin(cylinderPhi) * light.basisZ.xyz);
+                    lightPosition += (lightUv.x - 0.5) * light.axisU.xyz +
+                        light.geometry.x * lightNormal;
+                }
                 vec3 toLight = lightPosition - hit;
                 float distanceSquared = dot(toLight, toLight);
                 float lightDistance = sqrt(max(distanceSquared, 1e-8));
                 lightDirection = toLight / lightDistance;
-                float emissionCosine = max(dot(
-                    normalize(light.basisZ.xyz), lightDirection), 0.0);
+                float emissionCosine = max(
+                    dot(lightNormal, -lightDirection), 0.0);
                 if (emissionCosine > 0.0 && light.controls.w > 0.0) {
-                    float focus = pow(emissionCosine,
+                    float shapingCosine = max(dot(
+                        normalize(light.basisZ.xyz), lightDirection), 0.0);
+                    float focus = pow(shapingCosine,
                                       max(light.shaping.x, 0.0));
                     vec3 focusColor = mix(light.focusTint.rgb, vec3(1.0), focus);
-                    vec3 textureValue = light.textureInfo.x == 0xffffffffu
+                    vec3 textureValue = light.textureInfo.z != 1u ||
+                        light.textureInfo.x == 0xffffffffu
                         ? vec3(1.0)
                         : texture(materialTextures[
                             nonuniformEXT(light.textureInfo.x)], lightUv).rgb;
                     lightRadiance = light.colorIntensity.rgb *
                         light.colorIntensity.a * textureValue * focusColor *
-                        shapingConeFactor(light, emissionCosine);
+                        shapingConeFactor(light, shapingCosine);
                     inversePdf = light.controls.w * emissionCosine /
                         max(distanceSquared, 1e-8);
                     maximumShadowDistance = max(lightDistance - 0.003, 0.001);
@@ -1547,10 +1593,11 @@ struct GpuLight {
     std::array<float, 4> focusTint;
     std::array<float, 4> shadow;
     std::array<float, 4> shadowColor;
+    std::array<float, 4> geometry;
     std::array<std::uint32_t, 4> textureInfo;
 };
 
-static_assert(sizeof(GpuLight) == 13U * 16U);
+static_assert(sizeof(GpuLight) == 14U * 16U);
 
 float SrgbToLinear(float value)
 {
@@ -2060,7 +2107,7 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v15." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v16." + modeName;
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v10." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
@@ -2242,7 +2289,8 @@ public:
         for (const SceneLight& light : snapshot->lights) {
             if (!light.visible || lights.size() >= kMaxLights) continue;
             float radianceScale = light.intensity * std::exp2(light.exposure);
-            if (light.type == SceneLightType::Rect && light.normalize) {
+            if (light.type != SceneLightType::Dome &&
+                light.type != SceneLightType::Distant && light.normalize) {
                 radianceScale /= std::max(light.area, 1e-8F);
             }
             lights.push_back({
@@ -2250,7 +2298,7 @@ public:
                  light.color[1] * light.temperatureColor[1],
                  light.color[2] * light.temperatureColor[2], radianceScale},
                 {light.diffuse, light.specular,
-                 light.type == SceneLightType::Rect ? 1.0F : 0.0F,
+                 static_cast<float>(light.type),
                  std::max(light.area, 0.0F)},
                 {light.position[0], light.position[1], light.position[2], 0.0F},
                 {light.axisU[0], light.axisU[1], light.axisU[2], 0.0F},
@@ -2266,6 +2314,7 @@ public:
                  light.shadowFalloff, light.shadowFalloffGamma},
                 {light.shadowColor[0], light.shadowColor[1],
                  light.shadowColor[2], 0.0F},
+                {light.radius, light.length, light.angle, 0.0F},
                 {textureIndex(light.texture),
                  static_cast<std::uint32_t>(light.textureFormat),
                  static_cast<std::uint32_t>(light.type),

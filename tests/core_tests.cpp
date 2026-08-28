@@ -228,7 +228,25 @@ void TestScenePublishesLights()
     Require(snapshot->lights.size() == 1, "light was not published");
     Require(snapshot->lights.front().texture == dome.texture,
             "light texture binding changed");
+    const std::array analyticTypes{
+        hdcodex::SceneLightType::Disk,
+        hdcodex::SceneLightType::Sphere,
+        hdcodex::SceneLightType::Cylinder,
+        hdcodex::SceneLightType::Distant,
+    };
+    for (std::size_t index = 0; index < analyticTypes.size(); ++index) {
+        hdcodex::SceneLight analytic;
+        analytic.id = "/analytic" + std::to_string(index);
+        analytic.type = analyticTypes[index];
+        scene.UpsertLight(analytic);
+    }
+    (void)scene.Publish();
+    Require(scene.Snapshot()->lights.size() == 5,
+            "analytic light types were not published");
     scene.RemoveLight(dome.id);
+    for (std::size_t index = 0; index < analyticTypes.size(); ++index) {
+        scene.RemoveLight("/analytic" + std::to_string(index));
+    }
     (void)scene.Publish();
     Require(scene.Snapshot()->lights.empty(), "removed light remained published");
 }

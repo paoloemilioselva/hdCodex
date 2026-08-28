@@ -84,7 +84,8 @@ asset-input and display-output format, not the path-throughput representation.
 
 ### Lighting
 
-- UsdLux `DomeLight` and `RectLight` ingestion.
+- UsdLux `DomeLight`, `RectLight`, `DiskLight`, `SphereLight`,
+  `CylinderLight`, and `DistantLight` ingestion.
 - HDR dome textures with lat-long, mirrored-ball, angular, and vertical-cross
   layouts.
 - Power-heuristic MIS between authored-dome next-event samples and non-delta
@@ -93,6 +94,9 @@ asset-input and display-output format, not the path-throughput representation.
   an unbiased uniform-direction fallback.
 - Rectangle-light transforms, textured emission, area normalization, shaping,
   diffuse/specular multipliers, and colored distance-limited shadows.
+- Geometry-aware disk, sphere, and cylinder area sampling plus angular-diameter
+  distant-light sampling; distant angle changes shadow softness without
+  changing authored energy.
 - Stable world-space fallback sky plus a shadow-casting sun at 75° elevation
   when the stage has no supported authored lights. The fallback selects Y-up or
   Z-up once and does not rotate with the camera.

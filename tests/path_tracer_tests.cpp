@@ -4,6 +4,7 @@
 #include "hdcodex/gpu/vulkan_path_tracer.h"
 
 #include <cmath>
+#include <array>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -163,6 +164,57 @@ try {
     Check(pixels[center + 1] > pixels[center] * 1.5F,
           "path tracer did not sample the bound base-color texture");
     Check(pixels[center + 3] == 1.0F, "path tracer alpha is not one");
+
+    const auto authoredLights = scene->lights;
+    const std::array analyticLights{
+        hdcodex::SceneLight{
+            .id = "/disk",
+            .type = hdcodex::SceneLightType::Disk,
+            .intensity = 20.0F,
+            .position = {0.0F, 0.0F, -1.5F},
+            .axisU = {0.75F, 0.0F, 0.0F},
+            .axisV = {0.0F, 0.75F, 0.0F},
+            .area = 1.7671459F,
+        },
+        hdcodex::SceneLight{
+            .id = "/sphere",
+            .type = hdcodex::SceneLightType::Sphere,
+            .intensity = 20.0F,
+            .position = {0.0F, 0.0F, -1.5F},
+            .radius = 0.35F,
+            .area = 1.5393804F,
+        },
+        hdcodex::SceneLight{
+            .id = "/cylinder",
+            .type = hdcodex::SceneLightType::Cylinder,
+            .intensity = 20.0F,
+            .position = {0.0F, 0.0F, -1.5F},
+            .axisU = {1.0F, 0.0F, 0.0F},
+            .radius = 0.25F,
+            .length = 1.0F,
+            .area = 1.5707963F,
+        },
+        hdcodex::SceneLight{
+            .id = "/distant",
+            .type = hdcodex::SceneLightType::Distant,
+            .intensity = 1.0F,
+            .angle = 0.53F,
+        },
+    };
+    for (const hdcodex::SceneLight& light : analyticLights) {
+        scene->lights = {light};
+        tracer.SetScene(scene);
+        const auto analyticPixels = renderSamples(32U);
+        const float analyticCenterLuma = analyticPixels[center] +
+            analyticPixels[center + 1U] + analyticPixels[center + 2U];
+        if (!std::isfinite(analyticCenterLuma) || analyticCenterLuma <= 0.01F) {
+            throw std::runtime_error(
+                "analytic Hydra light did not illuminate the test surface: " +
+                light.id);
+        }
+    }
+    scene->lights = authoredLights;
+    tracer.SetScene(scene);
 
     scene->materials.front().diffuseModel =
         hdcodex::SceneMaterial::DiffuseModel::OrenNayar;

@@ -32,6 +32,10 @@ const TfTokenVector SupportedSprims = {
     HdPrimTypeTokens->material,
     HdPrimTypeTokens->domeLight,
     HdPrimTypeTokens->rectLight,
+    HdPrimTypeTokens->diskLight,
+    HdPrimTypeTokens->sphereLight,
+    HdPrimTypeTokens->cylinderLight,
+    HdPrimTypeTokens->distantLight,
     HdPrimTypeTokens->extComputation,
 };
 const TfTokenVector SupportedBprims = {HdPrimTypeTokens->renderBuffer};
@@ -164,7 +168,11 @@ HdSprim* HdCodexRenderDelegate::CreateSprim(const TfToken& typeId, const SdfPath
         return new HdExtComputation(sprimId);
     }
     if (typeId == HdPrimTypeTokens->domeLight ||
-        typeId == HdPrimTypeTokens->rectLight) {
+        typeId == HdPrimTypeTokens->rectLight ||
+        typeId == HdPrimTypeTokens->diskLight ||
+        typeId == HdPrimTypeTokens->sphereLight ||
+        typeId == HdPrimTypeTokens->cylinderLight ||
+        typeId == HdPrimTypeTokens->distantLight) {
         return new HdCodexLight(sprimId, typeId);
     }
     return nullptr;

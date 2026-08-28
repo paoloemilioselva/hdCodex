@@ -25,6 +25,8 @@ private:
     TfToken _lightType;
     GfMatrix4d _transform{1.0};
     GfMatrix4d _domeOffset{1.0};
+    float _authoredRadius{0.5F};
+    float _authoredLength{1.0F};
     hdcodex::SceneLight _light;
 };
 

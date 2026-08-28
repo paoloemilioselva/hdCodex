@@ -73,9 +73,10 @@ primitive, weight, and roughness selected by the expanded MaterialX graph. It
 transports correlated sampled wavelengths, reconstructs
 authored RGB inputs into spectra, and integrates CIE XYZ only at the camera. It
 uploads as many as 64
-visible UsdLux DomeLight and RectLight records with their color temperature,
-intensity/exposure, diffuse/specular controls, shaping, texture, transform, and
-shadow parameters. Automatic-layout and lat-long dome textures build a compact
+visible UsdLux DomeLight, RectLight, DiskLight, SphereLight, CylinderLight, and
+DistantLight records with their color temperature, intensity/exposure,
+diffuse/specular controls, shaping, texture, transform, and shadow parameters.
+Automatic-layout and lat-long dome textures build a compact
 luminance-times-solid-angle CDF when the scene is uploaded. Direct lighting
 samples that distribution and evaluates its matching solid-angle PDF; other
 dome projections use an unbiased uniform fallback. Power-heuristic MIS combines
@@ -83,8 +84,15 @@ those authored-dome samples with non-delta BSDF continuation paths, including
 diffuse, anisotropic GGX, coat, and sheen proposal PDFs. Rectangles are sampled
 in area and converted to solid-angle measure. One authored light is selected
 per shading event and its selection probability is included in the estimator.
-RectLight `normalize` divides emitted radiance by world-space area as required
+Area-light `normalize` divides emitted radiance by world-space area as required
 by UsdLux.
+
+Rectangles, disks, spheres, and cylinder sidewalls are sampled in area measure
+and converted to solid angle at the shading point. Disk transforms preserve an
+elliptical footprint; non-uniform sphere and cylinder radial scaling use a
+volume/area-preserving scalar approximation. Distant lights sample the authored
+angular-diameter cone as an integrated directional source, so increasing angle
+softens shadows without reducing emitted energy.
 
 If the stage contains no supported authored lights, the shader falls back to a
 neutral analytic sky and a shadow-casting sun at 75° elevation with an oblique

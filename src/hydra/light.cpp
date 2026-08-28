@@ -91,22 +91,37 @@ HdCodexLight::HdCodexLight(const SdfPath& id, const TfToken& lightType)
     : HdLight(id), _lightType(lightType)
 {
     _light.id = id.GetString();
-    _light.type = lightType == HdPrimTypeTokens->rectLight
-        ? hdcodex::SceneLightType::Rect : hdcodex::SceneLightType::Dome;
+    if (lightType == HdPrimTypeTokens->rectLight) {
+        _light.type = hdcodex::SceneLightType::Rect;
+    } else if (lightType == HdPrimTypeTokens->diskLight) {
+        _light.type = hdcodex::SceneLightType::Disk;
+    } else if (lightType == HdPrimTypeTokens->sphereLight) {
+        _light.type = hdcodex::SceneLightType::Sphere;
+    } else if (lightType == HdPrimTypeTokens->cylinderLight) {
+        _light.type = hdcodex::SceneLightType::Cylinder;
+    } else if (lightType == HdPrimTypeTokens->distantLight) {
+        _light.type = hdcodex::SceneLightType::Distant;
+    } else {
+        _light.type = hdcodex::SceneLightType::Dome;
+    }
 }
 
 HdCodexLight::~HdCodexLight() = default;
 
 void HdCodexLight::_UpdateGeometry()
 {
+    constexpr double pi = 3.14159265358979323846;
     GfMatrix4d transform = _transform;
     if (_light.type == hdcodex::SceneLightType::Dome) {
         transform = _domeOffset * transform;
     }
     const GfVec3d origin = transform.Transform(GfVec3d(0.0));
-    GfVec3d x = transform.TransformDir(GfVec3d(1.0, 0.0, 0.0));
-    GfVec3d y = transform.TransformDir(GfVec3d(0.0, 1.0, 0.0));
-    GfVec3d z = transform.TransformDir(GfVec3d(0.0, 0.0, 1.0));
+    const GfVec3d transformedX = transform.TransformDir(GfVec3d(1.0, 0.0, 0.0));
+    const GfVec3d transformedY = transform.TransformDir(GfVec3d(0.0, 1.0, 0.0));
+    const GfVec3d transformedZ = transform.TransformDir(GfVec3d(0.0, 0.0, 1.0));
+    GfVec3d x = transformedX;
+    GfVec3d y = transformedY;
+    GfVec3d z = transformedZ;
     if (x.GetLengthSq() > 1e-20) x.Normalize();
     if (y.GetLengthSq() > 1e-20) y.Normalize();
     if (z.GetLengthSq() > 1e-20) z.Normalize();
@@ -115,14 +130,43 @@ void HdCodexLight::_UpdateGeometry()
     _light.basisY = ToArray(y);
     _light.basisZ = ToArray(z);
 
-    const GfVec3d axisU = _transform.TransformDir(
+    GfVec3d axisU = _transform.TransformDir(
         GfVec3d(static_cast<double>(_light.width), 0.0, 0.0));
-    const GfVec3d axisV = _transform.TransformDir(
+    GfVec3d axisV = _transform.TransformDir(
         GfVec3d(0.0, static_cast<double>(_light.height), 0.0));
+    float area = std::max(
+        static_cast<float>(GfCross(axisU, axisV).GetLength()), 1e-8F);
+    if (_light.type == hdcodex::SceneLightType::Disk) {
+        axisU = _transform.TransformDir(
+            GfVec3d(static_cast<double>(_authoredRadius), 0.0, 0.0));
+        axisV = _transform.TransformDir(
+            GfVec3d(0.0, static_cast<double>(_authoredRadius), 0.0));
+        area = std::max(static_cast<float>(pi *
+            GfCross(axisU, axisV).GetLength()), 1e-8F);
+    } else if (_light.type == hdcodex::SceneLightType::Sphere) {
+        const double scale = std::cbrt(std::max(
+            transformedX.GetLength() * transformedY.GetLength() *
+                transformedZ.GetLength(),
+            1e-20));
+        _light.radius = static_cast<float>(_authoredRadius * scale);
+        area = std::max(static_cast<float>(4.0 * pi * _light.radius *
+            _light.radius), 1e-8F);
+    } else if (_light.type == hdcodex::SceneLightType::Cylinder) {
+        axisU = _transform.TransformDir(
+            GfVec3d(static_cast<double>(_authoredLength), 0.0, 0.0));
+        _light.length = static_cast<float>(axisU.GetLength());
+        const double radialScale = std::sqrt(std::max(
+            transformedY.GetLength() * transformedZ.GetLength(), 1e-20));
+        _light.radius = static_cast<float>(_authoredRadius * radialScale);
+        area = std::max(static_cast<float>(2.0 * pi * _light.radius *
+            _light.length), 1e-8F);
+    } else if (_light.type == hdcodex::SceneLightType::Distant ||
+               _light.type == hdcodex::SceneLightType::Dome) {
+        area = 0.0F;
+    }
     _light.axisU = ToArray(axisU);
     _light.axisV = ToArray(axisV);
-    _light.area = std::max(
-        static_cast<float>(GfCross(axisU, axisV).GetLength()), 1e-8F);
+    _light.area = area;
 }
 
 void HdCodexLight::Sync(
@@ -186,11 +230,23 @@ void HdCodexLight::Sync(
                 ? offset.UncheckedGet<GfMatrix4d>() : GfMatrix4d(1.0);
             _light.textureFormat = DomeFormat(TokenValue(
                 param(HdLightTokens->textureFormat)));
-        } else {
+        } else if (_light.type == hdcodex::SceneLightType::Rect) {
             _light.width = std::max(0.0F, FloatValue(
                 param(HdLightTokens->width), _light.width));
             _light.height = std::max(0.0F, FloatValue(
                 param(HdLightTokens->height), _light.height));
+        } else if (_light.type == hdcodex::SceneLightType::Disk ||
+                   _light.type == hdcodex::SceneLightType::Sphere ||
+                   _light.type == hdcodex::SceneLightType::Cylinder) {
+            _authoredRadius = std::max(0.0F, FloatValue(
+                param(HdLightTokens->radius), _authoredRadius));
+            if (_light.type == hdcodex::SceneLightType::Cylinder) {
+                _authoredLength = std::max(0.0F, FloatValue(
+                    param(HdLightTokens->length), _authoredLength));
+            }
+        } else if (_light.type == hdcodex::SceneLightType::Distant) {
+            _light.angle = std::clamp(FloatValue(
+                param(HdLightTokens->angle), _light.angle), 0.0F, 359.999F);
         }
 
         const std::optional<std::string> texturePath = AssetValue(

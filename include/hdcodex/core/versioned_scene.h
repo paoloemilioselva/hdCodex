@@ -193,6 +193,10 @@ struct SceneTexture {
 enum class SceneLightType : std::uint32_t {
     Dome,
     Rect,
+    Disk,
+    Sphere,
+    Cylinder,
+    Distant,
 };
 
 enum class DomeTextureFormat : std::uint32_t {
@@ -229,6 +233,9 @@ struct SceneLight {
     std::array<float, 3> axisV{0.0F, 1.0F, 0.0F};
     float width{1.0F};
     float height{1.0F};
+    float radius{0.5F};
+    float length{1.0F};
+    float angle{0.53F};
     float area{1.0F};
 
     float shapingFocus{0.0F};
