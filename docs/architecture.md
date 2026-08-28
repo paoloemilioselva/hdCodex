@@ -160,9 +160,9 @@ outputs. It can be deleted when the standalone OpenUSD distribution moves to a
 MaterialX version with the corrected generator.
 
 The current generated-closure GPU binding supports constant and directly
-image-driven MaterialX base color, metalness, specular
+image-driven MaterialX base color, metalness, anisotropic specular
 roughness, emission, opacity, tangent-space normals, transmission, dielectric
-specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
+specular, coat, and sheen/fuzz. Indexed and face-varying UVs are triangulated in face-corner
 order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
 and accessed through a partially-bound descriptor array currently capped at
 256 textures. UDIM tiles are decoded to at most 1024 pixels on their longest
@@ -174,8 +174,10 @@ Opacity participates in primary and shadow ray-query candidate confirmation.
 Transmission supports spectral color, wavelength-dependent Cauchy IOR from
 OpenPBR dispersion controls, Fresnel refraction, thin-walled surfaces, Beer-law
 absorption, and homogeneous interior scattering.
-Specular and coat use energy-partitioned GGX lobes for direct and indirect
-lighting. Standard Surface and OpenPBR subsurface controls drive a bounded
+Specular and coat use energy-partitioned anisotropic GGX lobes for direct and
+indirect lighting. MaterialX Conty-Kulla and Zeltner sheen modes retain their
+directional-albedo layering, with a cosine proposal used for indirect sampling.
+Standard Surface and OpenPBR subsurface controls drive a bounded
 spectral random walk using authored mean-free-path radius, color, scale, and
 anisotropy. A wrapped direct-light term remains as a low-variance surface
 contribution.
@@ -191,7 +193,7 @@ Vulkan does not make a fragment-stage function directly callable from a compute
 shader, so hdCodex compiles the expanded, dependency-ordered MaterialX program
 into its compute closure ABI. This compiler recognizes primitive NodeDefs and
 generic combiners only; it never recognizes a high-level surface-model name.
-Arbitrary procedural nodes, exact texture transforms, sheen, an unbounded
+Arbitrary procedural nodes, exact texture transforms, an unbounded
 multi-scatter BSSRDF, and a general MaterialX-to-path-tracer callable ABI are
 not implemented. Common channel-reconstructed normal maps retain their
 MaterialX-authored green-channel inversion. Other texture adjustments that do

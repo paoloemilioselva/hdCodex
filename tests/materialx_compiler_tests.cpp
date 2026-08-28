@@ -290,12 +290,13 @@ try {
               std::abs(defaultImage.closure->baseColor[2] - 0.75F) < 1e-5F,
           "MaterialX image without a file did not use its authored default");
 
-    constexpr auto unsupportedSheenXml = R"mtlx(<?xml version="1.0"?>
+    constexpr auto sheenXml = R"mtlx(<?xml version="1.0"?>
 <materialx version="1.39">
   <sheen_bsdf name="sheen" type="BSDF">
-    <input name="weight" type="float" value="1"/>
-    <input name="color" type="color3" value="1, 0, 0"/>
-    <input name="roughness" type="float" value="0.5"/>
+    <input name="weight" type="float" value="0.7"/>
+    <input name="color" type="color3" value="1, 0.2, 0.1"/>
+    <input name="roughness" type="float" value="0.45"/>
+    <input name="mode" type="string" value="zeltner"/>
   </sheen_bsdf>
   <surface name="surface" type="surfaceshader">
     <input name="bsdf" type="BSDF" nodename="sheen"/>
@@ -304,16 +305,33 @@ try {
     <input name="surfaceshader" type="surfaceshader" nodename="surface"/>
   </surfacematerial>
 </materialx>)mtlx";
-    bool unsupportedSheenRejected = false;
-    try {
-        (void)compiler.CompileXml(unsupportedSheenXml, "unsupported_sheen_test");
-    } catch (const std::runtime_error& error) {
-        unsupportedSheenRejected =
-            std::string_view(error.what()).find("active sheen closure") !=
-            std::string_view::npos;
-    }
-    Check(unsupportedSheenRejected,
-          "active unsupported MaterialX sheen was not rejected explicitly");
+    const auto sheen = compiler.CompileXml(sheenXml, "sheen_test");
+    Check(sheen.closure && std::abs(sheen.closure->sheen - 0.7F) < 1e-5F &&
+              std::abs(sheen.closure->sheenColor[1] - 0.2F) < 1e-5F &&
+              std::abs(sheen.closure->sheenRoughness - 0.45F) < 1e-5F &&
+              sheen.closure->sheenMode == 1U,
+          "MaterialX sheen primitive did not compile into the closure ABI");
+
+    constexpr auto anisotropicXml = R"mtlx(<?xml version="1.0"?>
+<materialx version="1.39">
+  <conductor_bsdf name="metal" type="BSDF">
+    <input name="ior" type="color3" value="0.2, 0.4, 1.2"/>
+    <input name="extinction" type="color3" value="3.0, 2.4, 1.8"/>
+    <input name="roughness" type="vector2" value="0.15, 0.55"/>
+  </conductor_bsdf>
+  <surface name="surface" type="surfaceshader">
+    <input name="bsdf" type="BSDF" nodename="metal"/>
+  </surface>
+  <surfacematerial name="material" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="surface"/>
+  </surfacematerial>
+</materialx>)mtlx";
+    const auto anisotropic = compiler.CompileXml(
+        anisotropicXml, "anisotropic_roughness_test");
+    Check(anisotropic.closure &&
+              std::abs(anisotropic.closure->roughness - std::sqrt(0.15F)) < 1e-5F &&
+              std::abs(anisotropic.closure->roughnessV - std::sqrt(0.55F)) < 1e-5F,
+          "MaterialX anisotropic roughness lost its second axis");
 
     constexpr auto usdPrimvarReaderXml = R"mtlx(<?xml version="1.0"?>
 <materialx version="1.39">

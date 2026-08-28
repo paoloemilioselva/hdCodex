@@ -199,15 +199,15 @@ generated architecture.
 | Area | Current status |
 | --- | --- |
 | MaterialX graph generation | Raster stages plus an expanded closure program are generated; the supported program subset compiles into the path ABI |
-| Arbitrary value/procedural graphs | Supported constants, direct images, channel-reconstructed normals, identity folds, and arithmetic execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
+| Arbitrary value/procedural graphs | Graph-backed helpers are recursively expanded; supported constants, direct images, channel-reconstructed normals, conditionals, luminance, clamp, combine, and arithmetic execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
 | OpenPBR and Standard Surface | High-level NodeGraphs are expanded generically; supported primitive closure subsets compile without shader-name special cases |
 | USD Preview Surface | USD-native networks are rejected; genuinely MaterialX-authored variants follow normal NodeGraph expansion and closure capability checks |
 | Dielectric reflection | Partial IOR, Schlick Fresnel, and GGX reflection |
 | Dielectric transmission | Refraction, total internal reflection, thin-wall pass-through, absorption, and homogeneous scattering; no rough microfacet BTDF |
 | Conductors | Metallic base color used as F0; no complete conductor/complex-IOR semantics |
 | Dispersion | Wavelength sampling with an approximate Cauchy IOR model |
-| Coat | Weight, color, roughness, and IOR; no anisotropy, separate frame, or full layer semantics |
-| Fuzz and sheen | Unsupported |
+| Coat | Weight, color, anisotropic roughness, and IOR; no separate authored frame or complete multi-scatter layer semantics |
+| Fuzz and sheen | Conty-Kulla and Zeltner primitive modes compile to directional-albedo layers; indirect sampling currently uses a cosine proposal |
 | Thin-film interference | Unsupported |
 | Subsurface | Bounded eight-step spectral random walk plus an approximate wrapped direct term |
 | Volume terminals | Unsupported; only one homogeneous interior transmission medium is tracked |
@@ -333,12 +333,12 @@ labeled as a lighting preview rather than a path-transport reference.
 
 ### Phase 3: complete PBR closure coverage
 
-- OpenPBR 1.1: fuzz, coat darkening, anisotropic base/coat roughness, independent
-  normal/tangent frames, thin film, rough microfacet transmission, thin-wall
+- OpenPBR 1.1: complete fuzz reference sampling, independent normal/tangent
+  frames, thin film, rough microfacet transmission, thin-wall
   behavior, reference layers, and energy compensation.
 - Standard Surface and MaterialX USD Preview Surface through their authored
   NodeGraphs, with no shader-name special cases in transport.
-- Conductor complex IOR, dielectric boundaries, sheen, translucent,
+- Conductor complex IOR, dielectric boundaries, translucent,
   subsurface, hair, and the standard closure combiners.
 - White-furnace, reciprocity, normalization, sample/eval/pdf consistency, and
   MaterialX reference-image tests for every primitive.

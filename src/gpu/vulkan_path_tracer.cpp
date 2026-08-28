@@ -50,6 +50,7 @@ struct GpuMaterial {
     vec4 coatColor;
     vec4 transmissionMedium;
     vec4 transmissionScatter;
+    vec4 sheenColorMode;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
@@ -261,6 +262,153 @@ vec3 ggxSampleWeight(vec3 incident, vec3 outgoing, vec3 normal,
            max(nDotV * nDotH, 1e-5);
 }
 
+vec3 orthogonalTangent(vec3 normal, vec3 tangent)
+{
+    vec3 result = tangent - normal * dot(normal, tangent);
+    if (dot(result, result) < 1e-8) {
+        result = abs(normal.z) < 0.999
+            ? cross(normal, vec3(0.0, 0.0, 1.0))
+            : cross(normal, vec3(0.0, 1.0, 0.0));
+    }
+    return normalize(result);
+}
+
+float distributionGGXAnisotropic(vec3 halfway, vec3 normal, vec3 tangent,
+                                 vec2 roughness)
+{
+    vec3 axisX = orthogonalTangent(normal, tangent);
+    vec3 axisY = cross(normal, axisX);
+    vec2 alpha = clamp(roughness * roughness, vec2(0.001), vec2(1.0));
+    vec3 localHalf = vec3(dot(halfway, axisX), dot(halfway, axisY),
+                          max(dot(halfway, normal), 0.0));
+    float denominator = localHalf.x * localHalf.x / (alpha.x * alpha.x) +
+        localHalf.y * localHalf.y / (alpha.y * alpha.y) +
+        localHalf.z * localHalf.z;
+    return 1.0 / max(3.14159265359 * alpha.x * alpha.y *
+                     denominator * denominator, 1e-6);
+}
+
+float geometryGGXAnisotropic(vec3 direction, vec3 normal, vec3 tangent,
+                             vec2 roughness)
+{
+    float nDotDirection = max(dot(normal, direction), 0.0);
+    if (nDotDirection <= 0.0) return 0.0;
+    vec3 axisX = orthogonalTangent(normal, tangent);
+    vec3 axisY = cross(normal, axisX);
+    vec2 alpha = clamp(roughness * roughness, vec2(0.001), vec2(1.0));
+    float projected = pow(alpha.x * dot(direction, axisX), 2.0) +
+                      pow(alpha.y * dot(direction, axisY), 2.0);
+    float lambda = (-1.0 + sqrt(1.0 + projected /
+        max(nDotDirection * nDotDirection, 1e-8))) * 0.5;
+    return 1.0 / (1.0 + lambda);
+}
+
+vec3 evaluateGGXAnisotropic(vec3 normal, vec3 tangent, vec3 viewDirection,
+                            vec3 lightDirection, vec2 roughness, vec3 f0)
+{
+    vec3 halfway = normalize(viewDirection + lightDirection);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float vDotH = max(dot(viewDirection, halfway), 0.0);
+    if (nDotV <= 0.0 || nDotL <= 0.0 || vDotH <= 0.0) return vec3(0.0);
+    float distribution = distributionGGXAnisotropic(
+        halfway, normal, tangent, roughness);
+    float geometry = geometryGGXAnisotropic(
+        viewDirection, normal, tangent, roughness) *
+        geometryGGXAnisotropic(lightDirection, normal, tangent, roughness);
+    return distribution * geometry * fresnelSchlick(vDotH, f0) /
+           max(4.0 * nDotV * nDotL, 1e-5);
+}
+
+vec3 sampleGGXReflectionAnisotropic(vec3 incident, vec3 normal, vec3 tangent,
+                                    vec2 roughness, inout uint state)
+{
+    vec3 axisX = orthogonalTangent(normal, tangent);
+    vec3 axisY = cross(normal, axisX);
+    vec2 alpha = clamp(roughness * roughness, vec2(0.001), vec2(1.0));
+    float phi = 6.28318530718 * randomFloat(state);
+    float elevationSample = randomFloat(state);
+    float radius = sqrt(elevationSample /
+        max(1.0 - elevationSample, 1e-6));
+    vec3 halfway = normalize(axisX * (alpha.x * radius * cos(phi)) +
+                             axisY * (alpha.y * radius * sin(phi)) + normal);
+    if (dot(halfway, -incident) < 0.0) halfway = -halfway;
+    vec3 reflected = reflect(incident, halfway);
+    return dot(reflected, normal) > 0.0
+        ? normalize(reflected) : normalize(reflect(incident, normal));
+}
+
+vec3 ggxSampleWeightAnisotropic(vec3 incident, vec3 outgoing, vec3 normal,
+                                vec3 tangent, vec2 roughness, vec3 f0)
+{
+    vec3 viewDirection = normalize(-incident);
+    vec3 halfway = normalize(viewDirection + outgoing);
+    float nDotL = max(dot(normal, outgoing), 0.0);
+    float nDotH = max(dot(normal, halfway), 0.0);
+    float vDotH = max(dot(viewDirection, halfway), 0.0);
+    if (nDotL <= 0.0 || nDotH <= 0.0 || vDotH <= 0.0) return vec3(0.0);
+    float distribution = distributionGGXAnisotropic(
+        halfway, normal, tangent, roughness);
+    float pdf = distribution * nDotH / max(4.0 * vDotH, 1e-6);
+    return evaluateGGXAnisotropic(
+        normal, tangent, viewDirection, outgoing, roughness, f0) *
+        nDotL / max(pdf, 1e-6);
+}
+
+float sheenDirectionalAlbedo(float nDotV, float roughness)
+{
+    float x = clamp(nDotV, 0.0, 1.0);
+    float y = clamp(roughness, 0.01, 1.0);
+    vec2 fit = vec2(13.67300, 1.0) + vec2(-68.78018, 61.57746) * x +
+        vec2(799.08825, 442.78211) * y +
+        vec2(-905.00061, 2597.49308) * x * y +
+        vec2(60.28956, 121.81241) * x * x +
+        vec2(1086.96473, 3045.55075) * y * y;
+    return clamp(fit.x / max(fit.y, 1e-6), 0.0, 1.0);
+}
+
+float sheenImageworksResponse(vec3 normal, vec3 viewDirection,
+                              vec3 lightDirection, float roughness)
+{
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    if (nDotL <= 0.0 || nDotV <= 0.0) return 0.0;
+    vec3 halfway = normalize(viewDirection + lightDirection);
+    float nDotH = max(dot(normal, halfway), 0.0);
+    float inverseRoughness = 1.0 / max(roughness, 0.005);
+    float distribution = (2.0 + inverseRoughness) *
+        pow(max(1.0 - nDotH * nDotH, 0.0), inverseRoughness * 0.5) /
+        (2.0 * 3.14159265359);
+    float brdf = distribution /
+        max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+    return brdf * nDotL;
+}
+
+float sheenZeltnerDirectionalAlbedo(float nDotV, float roughness)
+{
+    float x = clamp(nDotV, 0.0, 1.0);
+    float y = clamp(roughness, 0.01, 1.0);
+    float s = y * (0.0206607 + 1.58491 * y) /
+        (0.0379424 + y * (1.32227 + y));
+    float m = y * (-0.193854 + y * (-1.14885 +
+        y * (1.7932 - 0.95943 * y * y))) / (0.046391 + y);
+    float o = y * (0.000654023 + (-0.0207818 + 0.119681 * y) * y) /
+        (1.26264 + y * (-1.92021 + y));
+    return clamp(exp(-0.5 * pow((x - m) / max(s, 1e-6), 2.0)) /
+        (max(s, 1e-6) * sqrt(2.0 * 3.14159265359)) + o, 0.0, 1.0);
+}
+
+float sheenResponse(vec3 normal, vec3 viewDirection, vec3 lightDirection,
+                    float roughness, bool zeltner)
+{
+    if (!zeltner) return sheenImageworksResponse(
+        normal, viewDirection, lightDirection, roughness);
+    float nDotL = max(dot(normal, lightDirection), 0.0);
+    float nDotV = max(dot(normal, viewDirection), 0.0);
+    return sheenZeltnerDirectionalAlbedo(nDotV, roughness) *
+        nDotL / 3.14159265359;
+}
+
 vec2 directionToVerticalCross(vec3 direction)
 {
     vec3 absoluteDirection = abs(direction);
@@ -407,6 +555,18 @@ vec3 applyNormalMap(uint textureIndex, bool flipY, float scale,
     return dot(result, geometricNormal) < 0.0 ? -result : result;
 }
 
+vec3 surfaceTangent(vec3 normal, vec3 p0, vec3 p1, vec3 p2,
+                    vec2 uv0, vec2 uv1, vec2 uv2)
+{
+    vec2 deltaUv1 = uv1 - uv0;
+    vec2 deltaUv2 = uv2 - uv0;
+    float determinant = deltaUv1.x * deltaUv2.y - deltaUv1.y * deltaUv2.x;
+    if (abs(determinant) < 1e-8) return orthogonalTangent(normal, vec3(1.0, 0.0, 0.0));
+    vec3 tangent = ((p1 - p0) * deltaUv2.y -
+                    (p2 - p0) * deltaUv1.y) / determinant;
+    return orthogonalTangent(normal, tangent);
+}
+
 vec3 surfaceShadingNormal(uint primitive, vec2 barycentrics, vec3 geometricNormal)
 {
     vec3 barycentric = vec3(1.0 - barycentrics.x - barycentrics.y,
@@ -456,10 +616,11 @@ vec3 shadowVisibility(vec3 origin, vec3 direction, float maximumDistance,
 }
 
 vec3 evaluateDirectSurface(
-    vec3 normal, vec3 viewDirection, vec3 lightDirection,
+    vec3 normal, vec3 tangent, vec3 viewDirection, vec3 lightDirection,
     vec3 diffuseColor, float transmission, float subsurface,
-    float metalness, float roughness, vec3 f0,
-    float coat, float coatRoughness, vec3 coatF0,
+    float metalness, vec2 roughness, vec3 f0,
+    float coat, vec2 coatRoughness, vec3 coatF0,
+    float sheen, vec3 sheenColor, float sheenRoughness, bool sheenZeltner,
     float diffuseScale, float specularScale)
 {
     float nDotL = max(dot(normal, lightDirection), 0.0);
@@ -472,18 +633,28 @@ vec3 evaluateDirectSurface(
     vec3 diffuse = diffuseScale * (vec3(1.0) - baseFresnel) *
         (1.0 - metalness) * diffuseColor *
         (wrappedNdotL / 3.14159265359) * (1.0 - transmission);
-    vec3 specular = specularScale * nDotL * evaluateGGX(
-        normal, viewDirection, lightDirection, roughness, f0);
+    vec3 specular = specularScale * nDotL * evaluateGGXAnisotropic(
+        normal, tangent, viewDirection, lightDirection, roughness, f0);
     vec3 coatFresnel = vec3(0.0);
     vec3 coatSpecular = vec3(0.0);
     if (coat > 0.0) {
         coatFresnel = fresnelSchlick(
             max(dot(viewDirection, halfway), 0.0), coatF0);
-        coatSpecular = specularScale * coat * nDotL * evaluateGGX(
-            normal, viewDirection, lightDirection, coatRoughness, coatF0);
+        coatSpecular = specularScale * coat * nDotL * evaluateGGXAnisotropic(
+            normal, tangent, viewDirection, lightDirection,
+            coatRoughness, coatF0);
     }
-    return (vec3(1.0) - coat * coatFresnel) *
+    vec3 baseLayer = (vec3(1.0) - coat * coatFresnel) *
         (diffuse + specular) + coatSpecular;
+    float sheenAlbedo = sheenZeltner
+        ? sheenZeltnerDirectionalAlbedo(
+            max(dot(normal, viewDirection), 0.0), sheenRoughness)
+        : sheenDirectionalAlbedo(
+            max(dot(normal, viewDirection), 0.0), sheenRoughness);
+    vec3 sheenLayer = specularScale * sheen * sheenColor * sheenResponse(
+        normal, viewDirection, lightDirection, sheenRoughness, sheenZeltner);
+    return baseLayer * (1.0 - clamp(sheen * sheenAlbedo, 0.0, 1.0)) +
+        sheenLayer;
 }
 
 vec3 uniformSphere(inout uint state)
@@ -706,14 +877,16 @@ void main()
         float metalness = clamp(sampleMaterialTexture(
             material.textureIndices0.y, surfaceUv,
             vec4(material.baseColorMetalness.a)).r, 0.0, 1.0);
-        float roughness = clamp(sampleMaterialTexture(
+        vec2 roughness = clamp(sampleMaterialTexture(
             material.textureIndices0.z, surfaceUv,
-            vec4(material.emissionRoughness.a)).r, 0.02, 1.0);
+            vec4(material.emissionRoughness.a, material.subsurfaceColor.w,
+                 0.0, 1.0)).rg, vec2(0.02), vec2(1.0));
         normal = applyNormalMap(material.textureIndices1.y,
                                 material.coatWeightRoughnessIor.w > 0.5,
                                 material.subsurfaceWeightScale.w,
                                 surfaceUv, normal,
                                 p0, p1, p2, uv0, uv1, uv2);
+        vec3 tangent = surfaceTangent(normal, p0, p1, p2, uv0, uv1, uv2);
         vec3 emissionRgb = material.textureIndices0.w == 0xffffffffu
             ? material.emissionRoughness.rgb
             : sampleMaterialTexture(material.textureIndices0.w, surfaceUv, vec4(0.0)).rgb *
@@ -770,7 +943,8 @@ void main()
                             specularColor, vec3(0.0), vec3(1.0)),
                       baseColor, metalness);
         float coat = 0.0;
-        float coatRoughness = material.coatWeightRoughnessIor.y;
+        vec2 coatRoughness = vec2(
+            material.coatWeightRoughnessIor.y, material.subsurfaceRadius.w);
         vec3 coatF0 = vec3(0.0);
         if (material.coatWeightRoughnessIor.x > 0.0 ||
             material.textureIndices3.z != 0xffffffffu) {
@@ -785,7 +959,8 @@ void main()
                     coatColorRgb, wavelength));
                 coatRoughness = clamp(sampleMaterialTexture(
                     material.textureIndices4.x, surfaceUv,
-                    vec4(coatRoughness)).r, 0.02, 1.0);
+                    vec4(coatRoughness, 0.0, 1.0)).rg,
+                    vec2(0.02), vec2(1.0));
                 float coatIor = max(material.coatWeightRoughnessIor.z, 1.0001);
                 float coatReflectance = (coatIor - 1.0) / (coatIor + 1.0);
                 coatReflectance *= coatReflectance;
@@ -793,6 +968,19 @@ void main()
                                vec3(0.0), vec3(1.0));
             }
         }
+
+        float sheen = clamp(sampleMaterialTexture(
+            material.textureIndices1.w, surfaceUv,
+            vec4(material.coatColor.w)).r, 0.0, 1.0);
+        vec3 sheenColorRgb = sampleMaterialTexture(
+            material.textureIndices2.w, surfaceUv,
+            vec4(material.sheenColorMode.rgb, 1.0)).rgb;
+        vec3 sheenColor = vec3(reflectanceSpectrum(
+            sheenColorRgb, wavelength));
+        float sheenRoughness = clamp(sampleMaterialTexture(
+            material.textureIndices4.y, surfaceUv,
+            vec4(material.transmissionScatter.w)).r, 0.01, 1.0);
+        bool sheenZeltner = material.sheenColorMode.w > 0.5;
 
         vec3 viewDirection = normalize(-rayDirection);
         uint lightCount = (camera.frame.w >> 16u) & 0xffu;
@@ -839,12 +1027,13 @@ R"glsl(
             }
             if (inversePdf > 0.0) {
                 float sampledSpecularScale =
-                    light.textureInfo.z == 0u && roughness < 0.2
+                    light.textureInfo.z == 0u && max(roughness.x, roughness.y) < 0.2
                     ? 0.0 : light.controls.y;
                 vec3 direct = evaluateDirectSurface(
-                    normal, viewDirection, lightDirection, diffuseColor,
-                    transmission, subsurface, metalness, roughness, f0,
-                    coat, coatRoughness, coatF0,
+                    normal, tangent, viewDirection, lightDirection,
+                    diffuseColor, transmission, subsurface, metalness,
+                    roughness, f0, coat, coatRoughness, coatF0,
+                    sheen, sheenColor, sheenRoughness, sheenZeltner,
                     light.controls.x, sampledSpecularScale);
                 if (any(greaterThan(direct, vec3(0.0)))) {
                     vec3 visibility = shadowVisibility(
@@ -869,9 +1058,10 @@ R"glsl(
             const vec3 sunDirection = normalize(
                 up * 0.9659258 + azimuth * 0.2588190);
             vec3 direct = evaluateDirectSurface(
-                normal, viewDirection, sunDirection, diffuseColor,
+                normal, tangent, viewDirection, sunDirection, diffuseColor,
                 transmission, subsurface, metalness, roughness, f0,
-                coat, coatRoughness, coatF0, 1.0, 1.0);
+                coat, coatRoughness, coatF0,
+                sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 1.0);
             if (any(greaterThan(direct, vec3(0.0)))) {
                 vec3 visibility = shadowVisibility(
                     hit + orientedGeometricNormal * 0.002,
@@ -885,9 +1075,10 @@ R"glsl(
             }
             vec3 skyDirection = cosineHemisphere(normal, rng);
             vec3 skyDirect = evaluateDirectSurface(
-                normal, viewDirection, skyDirection, diffuseColor,
+                normal, tangent, viewDirection, skyDirection, diffuseColor,
                 transmission, subsurface, metalness, roughness, f0,
-                coat, coatRoughness, coatF0, 1.0, 0.0);
+                coat, coatRoughness, coatF0,
+                sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 0.0);
             if (any(greaterThan(skyDirect, vec3(0.0)))) {
                 vec3 visibility = shadowVisibility(
                     hit + orientedGeometricNormal * 0.002,
@@ -946,63 +1137,85 @@ R"glsl(
 
         environmentOnMiss = false;
         rayOrigin = hit + orientedGeometricNormal * 0.002;
-        vec3 coatContribution = coat > 0.0
-            ? coat * fresnelSchlick(max(dot(normal, viewDirection), 0.0), coatF0)
-            : vec3(0.0);
-        float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
-        if (coatProbability > 0.0 && randomFloat(rng) < coatProbability) {
-            vec3 incident = rayDirection;
-            rayDirection = sampleGGXReflection(
-                rayDirection, normal, coatRoughness, rng);
-            throughput *= coat * ggxSampleWeight(
-                incident, rayDirection, normal, coatRoughness, coatF0) /
-                coatProbability;
-            environmentOnMiss = coatRoughness < 0.2;
+        float sheenAlbedo = sheenZeltner
+            ? sheenZeltnerDirectionalAlbedo(
+                max(dot(normal, viewDirection), 0.0), sheenRoughness)
+            : sheenDirectionalAlbedo(
+                max(dot(normal, viewDirection), 0.0), sheenRoughness);
+        float sheenProbability = clamp(
+            sheen * sheenAlbedo * luminance(sheenColor), 0.0, 0.95);
+        if (sheenProbability > 0.0 && randomFloat(rng) < sheenProbability) {
+            rayDirection = cosineHemisphere(normal, rng);
+            float sheenPdf = max(dot(normal, rayDirection), 0.0) /
+                3.14159265359;
+            float response = sheenResponse(
+                normal, viewDirection, rayDirection,
+                sheenRoughness, sheenZeltner);
+            throughput *= sheen * sheenColor * response /
+                max(sheenProbability * sheenPdf, 1e-6);
+            environmentOnMiss = true;
         } else {
-            throughput *= (vec3(1.0) - coatContribution) /
-                max(1.0 - coatProbability, 1e-4);
-            vec3 baseFresnel = fresnelSchlick(
-                max(dot(normal, viewDirection), 0.0), f0);
-            vec3 specularContribution = baseFresnel;
-            vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
-                (1.0 - metalness) * diffuseColor;
-            float specularEnergy = luminance(specularContribution);
-            float diffuseEnergy = luminance(diffuseContribution);
-            float specularProbability = clamp(
-                specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
-                0.05, 0.95);
-            if (randomFloat(rng) < specularProbability) {
+            throughput *= (1.0 - sheen * sheenAlbedo) /
+                max(1.0 - sheenProbability, 1e-4);
+            vec3 coatContribution = coat > 0.0
+                ? coat * fresnelSchlick(
+                    max(dot(normal, viewDirection), 0.0), coatF0)
+                : vec3(0.0);
+            float coatProbability = clamp(luminance(coatContribution), 0.0, 0.95);
+            if (coatProbability > 0.0 && randomFloat(rng) < coatProbability) {
                 vec3 incident = rayDirection;
-                rayDirection = sampleGGXReflection(
-                    rayDirection, normal, roughness, rng);
-                throughput *= ggxSampleWeight(
-                    incident, rayDirection, normal, roughness, f0) /
-                    specularProbability;
-                environmentOnMiss = roughness < 0.2;
+                rayDirection = sampleGGXReflectionAnisotropic(
+                    rayDirection, normal, tangent, coatRoughness, rng);
+                throughput *= coat * ggxSampleWeightAnisotropic(
+                    incident, rayDirection, normal, tangent,
+                    coatRoughness, coatF0) / coatProbability;
+                environmentOnMiss = max(coatRoughness.x, coatRoughness.y) < 0.2;
             } else {
-                throughput *= diffuseContribution /
-                    max(1.0 - specularProbability, 1e-4);
-                if (subsurface > 0.0 && randomFloat(rng) < subsurface) {
-                    float radius = max(reconstructRgb(
-                        subsurfaceRadiusRgb, wavelength) *
-                        max(material.subsurfaceWeightScale.y, 0.0), 0.001);
-                    float albedo = reflectanceSpectrum(
-                        subsurfaceColorRgb, wavelength);
-                    vec3 exitOrigin;
-                    vec3 exitDirection;
-                    float attenuation;
-                    if (randomWalkSubsurface(
-                        hit, orientedGeometricNormal, radius, albedo,
-                        material.subsurfaceWeightScale.z, rng,
-                        exitOrigin, exitDirection, attenuation)) {
-                        throughput *= attenuation;
-                        rayOrigin = exitOrigin;
-                        rayDirection = exitDirection;
-                        environmentOnMiss = true;
-                        continue;
+                throughput *= (vec3(1.0) - coatContribution) /
+                    max(1.0 - coatProbability, 1e-4);
+                vec3 baseFresnel = fresnelSchlick(
+                    max(dot(normal, viewDirection), 0.0), f0);
+                vec3 specularContribution = baseFresnel;
+                vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
+                    (1.0 - metalness) * diffuseColor;
+                float specularEnergy = luminance(specularContribution);
+                float diffuseEnergy = luminance(diffuseContribution);
+                float specularProbability = clamp(
+                    specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
+                    0.05, 0.95);
+                if (randomFloat(rng) < specularProbability) {
+                    vec3 incident = rayDirection;
+                    rayDirection = sampleGGXReflectionAnisotropic(
+                        rayDirection, normal, tangent, roughness, rng);
+                    throughput *= ggxSampleWeightAnisotropic(
+                        incident, rayDirection, normal, tangent,
+                        roughness, f0) / specularProbability;
+                    environmentOnMiss = max(roughness.x, roughness.y) < 0.2;
+                } else {
+                    throughput *= diffuseContribution /
+                        max(1.0 - specularProbability, 1e-4);
+                    if (subsurface > 0.0 && randomFloat(rng) < subsurface) {
+                        float radius = max(reconstructRgb(
+                            subsurfaceRadiusRgb, wavelength) *
+                            max(material.subsurfaceWeightScale.y, 0.0), 0.001);
+                        float albedo = reflectanceSpectrum(
+                            subsurfaceColorRgb, wavelength);
+                        vec3 exitOrigin;
+                        vec3 exitDirection;
+                        float attenuation;
+                        if (randomWalkSubsurface(
+                            hit, orientedGeometricNormal, radius, albedo,
+                            material.subsurfaceWeightScale.z, rng,
+                            exitOrigin, exitDirection, attenuation)) {
+                            throughput *= attenuation;
+                            rayOrigin = exitOrigin;
+                            rayDirection = exitDirection;
+                            environmentOnMiss = true;
+                            continue;
+                        }
                     }
+                    rayDirection = cosineHemisphere(normal, rng);
                 }
-                rayDirection = cosineHemisphere(normal, rng);
             }
         }
         if (bounce >= 2) {
@@ -1050,6 +1263,7 @@ struct GpuMaterial {
     std::array<float, 4> coatColor;
     std::array<float, 4> transmissionMedium;
     std::array<float, 4> transmissionScatter;
+    std::array<float, 4> sheenColorMode;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
@@ -1506,8 +1720,8 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v9." + modeName;
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v6." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v10." + modeName;
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v7." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
             options.optimization = GlslCompileOptions::Optimization::None;
@@ -1713,6 +1927,7 @@ public:
                 {1.0F, 1.0F, 1.0F, 0.0F},
                 {0.0F, 0.0F, 0.0F, 20.0F},
                 {0.0F, 0.0F, 0.0F, 0.0F},
+                {1.0F, 1.0F, 1.0F, 0.0F},
                 {kMissingTexture, kMissingTexture,
                  kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
@@ -1743,38 +1958,43 @@ public:
                  material.subsurfaceScatterAnisotropy,
                  material.normalTextureScale},
                 {material.subsurfaceColor[0], material.subsurfaceColor[1],
-                 material.subsurfaceColor[2], 0.0F},
+                 material.subsurfaceColor[2], material.roughnessV},
                 {material.subsurfaceRadius[0], material.subsurfaceRadius[1],
-                 material.subsurfaceRadius[2], 0.0F},
+                 material.subsurfaceRadius[2], material.coatRoughnessV},
                 {material.specularWeight, material.specularColor[0],
                  material.specularColor[1], material.specularColor[2]},
                 {material.coat, material.coatRoughness,
                  material.coatIndexOfRefraction,
                  material.normalTextureFlipY ? 1.0F : 0.0F},
                 {material.coatColor[0], material.coatColor[1],
-                 material.coatColor[2], 0.0F},
+                 material.coatColor[2], material.sheen},
                 {material.transmissionDepth,
                  material.transmissionScatterAnisotropy,
                  material.transmissionDispersionScale,
                  material.transmissionDispersionAbbeNumber},
                 {material.transmissionScatter[0], material.transmissionScatter[1],
-                 material.transmissionScatter[2], 0.0F},
+                 material.transmissionScatter[2], material.sheenRoughness},
+                {material.sheenColor[0], material.sheenColor[1],
+                 material.sheenColor[2], static_cast<float>(material.sheenMode)},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
                  textureIndex(material.emissionTexture)},
                 {textureIndex(material.opacityTexture),
                  textureIndex(material.normalTexture),
-                 textureIndex(material.transmissionTexture), kMissingTexture},
+                 textureIndex(material.transmissionTexture),
+                 textureIndex(material.sheenTexture)},
                 {textureIndex(material.subsurfaceTexture),
                  textureIndex(material.subsurfaceColorTexture),
-                 textureIndex(material.subsurfaceRadiusTexture), kMissingTexture},
+                 textureIndex(material.subsurfaceRadiusTexture),
+                 textureIndex(material.sheenColorTexture)},
                 {textureIndex(material.specularTexture),
                  textureIndex(material.specularColorTexture),
                  textureIndex(material.coatTexture),
                  textureIndex(material.coatColorTexture)},
                 {textureIndex(material.coatRoughnessTexture),
-                 kMissingTexture, kMissingTexture, kMissingTexture},
+                 textureIndex(material.sheenRoughnessTexture),
+                 kMissingTexture, kMissingTexture},
             });
         }
         std::map<std::array<float, 3>, std::uint32_t> displayColorMaterials;

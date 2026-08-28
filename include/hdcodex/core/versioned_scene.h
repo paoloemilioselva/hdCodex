@@ -109,10 +109,12 @@ struct SceneMaterial {
     std::array<float, 3> transmissionScatter{0.0F, 0.0F, 0.0F};
     std::array<float, 3> specularColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> coatColor{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> sheenColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> subsurfaceColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> subsurfaceRadius{1.0F, 0.2F, 0.1F};
     float metalness{0.0F};
     float roughness{0.5F};
+    float roughnessV{0.5F};
     float opacity{1.0F};
     float emissionWeight{0.0F};
     float transmission{0.0F};
@@ -124,7 +126,12 @@ struct SceneMaterial {
     float specularWeight{1.0F};
     float coat{0.0F};
     float coatRoughness{0.1F};
+    float coatRoughnessV{0.1F};
     float coatIndexOfRefraction{1.5F};
+    float sheen{0.0F};
+    float sheenRoughness{0.3F};
+    /// MaterialX sheen mode: 0 is Conty-Kulla, 1 is Zeltner.
+    std::uint32_t sheenMode{0U};
     float subsurface{0.0F};
     float subsurfaceScale{1.0F};
     float subsurfaceScatterAnisotropy{0.0F};
@@ -146,6 +153,9 @@ struct SceneMaterial {
     std::string coatTexture;
     std::string coatColorTexture;
     std::string coatRoughnessTexture;
+    std::string sheenTexture;
+    std::string sheenColorTexture;
+    std::string sheenRoughnessTexture;
     std::string subsurfaceTexture;
     std::string subsurfaceColorTexture;
     std::string subsurfaceRadiusTexture;

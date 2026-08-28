@@ -169,14 +169,7 @@ public:
         const MaterialXProgramInput* input = FindInput(closure, "roughness");
         if (!input) return ParseValue("float", "0");
         if (input->upstreamNode.empty()) return ParseValue(input->type, input->value);
-        const Value value = Evaluate(input->upstreamNode, input->upstreamOutput);
-        if (value.type == "vector2") {
-            Value scalar = value;
-            scalar.type = "float";
-            scalar.number[0] = value.number[0];
-            return scalar;
-        }
-        return value;
+        return Evaluate(input->upstreamNode, input->upstreamOutput);
     }
 
     Value NormalTexture(const MaterialXProgramNode& closure) const
@@ -247,25 +240,6 @@ private:
             result.type = node.type;
             return result;
         }
-        if (node.type == "vector2" && FindInput(node, "roughness") &&
-            FindInput(node, "anisotropy")) {
-            const Value roughness = Input(node, "roughness");
-            const Value anisotropy = InputOr(node, "anisotropy", "float", "0");
-            if (roughness.kind == Value::Kind::Texture) {
-                Value result = roughness;
-                result.type = "vector2";
-                return result;
-            }
-            if (roughness.kind != Value::Kind::Numeric ||
-                anisotropy.kind != Value::Kind::Numeric) {
-                throw std::runtime_error(NodeError(
-                    node, "has a non-constant vector result"));
-            }
-            Value result = roughness;
-            result.type = "vector2";
-            result.number[1] = anisotropy.number[0];
-            return result;
-        }
         if (node.category == "artistic_ior") {
             const Value reflectivity = Input(node, "reflectivity");
             const Value edgeColor = Input(node, "edge_color");
@@ -293,6 +267,48 @@ private:
                 extinction.number[component] = std::sqrt(k2);
             }
             return output == "extinction" ? extinction : ior;
+        }
+        if (node.category == "roughness_anisotropy" ||
+            node.category == "glossiness_anisotropy") {
+            Value roughness = node.category == "roughness_anisotropy"
+                ? Input(node, "roughness") : Input(node, "glossiness");
+            const Value anisotropy = InputOr(node, "anisotropy", "float", "0");
+            if (roughness.kind == Value::Kind::Texture) {
+                roughness.type = "vector2";
+                return roughness;
+            }
+            if (roughness.kind != Value::Kind::Numeric ||
+                anisotropy.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has dynamic anisotropic roughness"));
+            }
+            float value = roughness.number[0];
+            if (node.category == "glossiness_anisotropy") value = 1.0F - value;
+            const float alpha = std::clamp(value * value, kEpsilon, 1.0F);
+            const float amount = std::clamp(anisotropy.number[0], 0.0F, 0.98F);
+            const float aspect = std::sqrt(1.0F - amount);
+            Value result = roughness;
+            result.type = "vector2";
+            result.number = amount > 0.0F
+                ? std::array<float, 4>{
+                    std::min(alpha / aspect, 1.0F), alpha * aspect, 0.0F, 0.0F}
+                : std::array<float, 4>{alpha, alpha, 0.0F, 0.0F};
+            return result;
+        }
+        if (node.category == "roughness_dual") {
+            Value result = Input(node, "roughness");
+            if (result.kind == Value::Kind::Texture) return result;
+            if (result.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has dynamic dual roughness"));
+            }
+            if (result.number[1] < 0.0F) result.number[1] = result.number[0];
+            result.number[0] = std::clamp(
+                result.number[0] * result.number[0], kEpsilon, 1.0F);
+            result.number[1] = std::clamp(
+                result.number[1] * result.number[1], kEpsilon, 1.0F);
+            result.type = "vector2";
+            return result;
         }
 
         if (node.category == "convert") {
@@ -337,6 +353,33 @@ private:
             result.type = node.type;
             return result;
         }
+        if (node.category == "combine2") {
+            const Value first = Input(node, "in1");
+            const Value second = Input(node, "in2");
+            if (first.kind == Value::Kind::Numeric &&
+                second.kind == Value::Kind::Numeric) {
+                Value result = first;
+                result.type = node.type;
+                result.number = {first.number[0], second.number[0], 0.0F, 0.0F};
+                return result;
+            }
+            if (first.kind == Value::Kind::Texture &&
+                second.kind == Value::Kind::Texture &&
+                first.texture == second.texture &&
+                first.textureChannel == 0 && second.textureChannel == 1 &&
+                !first.textureInverted && !second.textureInverted) {
+                Value result = first;
+                result.type = node.type;
+                result.textureChannel = -1;
+                return result;
+            }
+            // The compact ABI retains the source map when a generated
+            // roughness graph performs per-axis arithmetic on that map.
+            if (first.kind == Value::Kind::Texture) return first;
+            if (second.kind == Value::Kind::Texture) return second;
+            throw std::runtime_error(NodeError(
+                node, "does not combine numeric or same-image channels"));
+        }
         if (node.category == "combine3") {
             const Value red = Input(node, "in1");
             const Value green = Input(node, "in2");
@@ -369,30 +412,41 @@ private:
         }
         if (node.category == "luminance") {
             const Value input = Input(node, "in");
-            if (input.kind != Value::Kind::Numeric) {
-                throw std::runtime_error(NodeError(
-                    node, "uses texture luminance unsupported by this ABI"));
-            }
+            if (input.kind == Value::Kind::Texture) return input;
+            if (input.kind != Value::Kind::Numeric) return input;
             Value result = input;
-            const float luminance = input.number[0] * 0.2126F +
-                input.number[1] * 0.7152F + input.number[2] * 0.0722F;
+            const Value coefficients = InputOr(
+                node, "lumacoeffs", "color3", "0.2722287,0.6740818,0.0536895");
+            const float luminance = input.number[0] * coefficients.number[0] +
+                input.number[1] * coefficients.number[1] +
+                input.number[2] * coefficients.number[2];
             result.number = {luminance, luminance, luminance, luminance};
             result.type = node.type;
             return result;
         }
-        if (node.category == "ifgreater") {
+        if (node.category == "ifgreater" || node.category == "ifgreatereq" ||
+            node.category == "ifless" || node.category == "iflesseq" ||
+            node.category == "ifequal" || node.category == "ifnotequal") {
             const Value left = Input(node, "value1");
             const Value right = Input(node, "value2");
             if (left.kind != Value::Kind::Numeric || right.kind != Value::Kind::Numeric) {
                 throw std::runtime_error(NodeError(node, "has a dynamic comparison"));
             }
-            return Input(node, left.number[0] > right.number[0] ? "in1" : "in2");
+            bool condition = false;
+            if (node.category == "ifgreater") condition = left.number[0] > right.number[0];
+            else if (node.category == "ifgreatereq") condition = left.number[0] >= right.number[0];
+            else if (node.category == "ifless") condition = left.number[0] < right.number[0];
+            else if (node.category == "iflesseq") condition = left.number[0] <= right.number[0];
+            else if (node.category == "ifequal") condition = Near(left.number[0], right.number[0]);
+            else condition = !Near(left.number[0], right.number[0]);
+            return Input(node, condition ? "in1" : "in2");
         }
         if (node.category == "clamp") {
             Value input = Input(node, "in");
             const Value low = InputOr(node, "low", node.type, "0");
             const Value high = InputOr(node, "high", node.type, "1");
-            if (input.kind == Value::Kind::Texture) {
+            if (input.kind == Value::Kind::Texture ||
+                input.kind == Value::Kind::Geometric) {
                 return input;
             }
             if (input.kind != Value::Kind::Numeric || low.kind != Value::Kind::Numeric ||
@@ -495,7 +549,9 @@ private:
                 : binary([](float a, float b) { return std::max(a, b); }, false);
         }
         if (node.category == "sqrt" || node.category == "sign" ||
-            node.category == "ln" || node.category == "normalize") {
+            node.category == "ln" || node.category == "absval" ||
+            node.category == "floor" || node.category == "ceil" ||
+            node.category == "round" || node.category == "normalize") {
             Value result = Input(node, "in");
             if (result.kind == Value::Kind::Geometric && node.category == "normalize") {
                 return result;
@@ -510,6 +566,10 @@ private:
                 if (node.category == "sqrt") value = std::sqrt(std::max(value, 0.0F));
                 else if (node.category == "sign") value = value < 0.0F ? -1.0F : 1.0F;
                 else if (node.category == "ln") value = std::log(std::max(value, kEpsilon));
+                else if (node.category == "absval") value = std::abs(value);
+                else if (node.category == "floor") value = std::floor(value);
+                else if (node.category == "ceil") value = std::ceil(value);
+                else if (node.category == "round") value = std::round(value);
             }
             result.type = node.type;
             return result;
@@ -706,12 +766,7 @@ private:
             const MaterialXProgramInput* base = FindInput(node, "base");
             if (top && !top->upstreamNode.empty()) {
                 const MaterialXProgramNode& topNode = evaluator.Node(top->upstreamNode);
-                // Sheen transport is not implemented yet, but it must not
-                // erase an otherwise supported layered base closure.
-                if ((Classify(topNode) & ~ClosureSheen) != 0U ||
-                    Classify(topNode) != ClosureSheen) {
-                    VisitBsdf(topNode, layerDepth, true);
-                }
+                VisitBsdf(topNode, layerDepth, true);
             }
             if (base && !base->upstreamNode.empty()) {
                 const MaterialXProgramNode& baseNode = evaluator.Node(base->upstreamNode);
@@ -772,12 +827,13 @@ private:
                 reflectivity = evaluator.Input(node, "color0");
             } else {
                 const MaterialXProgramInput* iorInput = FindInput(node, "ior");
-                if (!iorInput || iorInput->upstreamNode.empty()) {
+                if (!iorInput) {
                     throw std::runtime_error(NodeError(node, "has no generated IOR source"));
                 }
-                const MaterialXProgramNode& source = evaluator.Node(iorInput->upstreamNode);
-                if (source.category == "artistic_ior") {
-                    reflectivity = evaluator.Input(source, "reflectivity");
+                const MaterialXProgramNode* source = iorInput->upstreamNode.empty()
+                    ? nullptr : &evaluator.Node(iorInput->upstreamNode);
+                if (source && source->category == "artistic_ior") {
+                    reflectivity = evaluator.Input(*source, "reflectivity");
                 } else {
                     const Value eta = evaluator.Input(node, "ior");
                     const Value extinction = evaluator.Input(node, "extinction");
@@ -799,8 +855,9 @@ private:
             }
             AssignColor(reflectivity, material.baseColor,
                         material.baseColorTexture, node, "conductor reflectivity");
-            AssignScalar(evaluator.Roughness(node), material.roughness,
-                         material.roughnessTexture, node, "conductor roughness");
+            AssignRoughness(evaluator.Roughness(node), material.roughness,
+                            material.roughnessV, material.roughnessTexture,
+                            node, "conductor roughness");
             CaptureNormal(node);
             return;
         }
@@ -817,8 +874,10 @@ private:
                             material.transmissionColor, material.transmissionTexture,
                             node, "transmission tint");
                 const Value roughness = evaluator.Roughness(node);
-                AssignScalar(roughness, material.roughness,
-                             material.roughnessTexture, node, "transmission roughness");
+                AssignRoughness(roughness, material.roughness,
+                                material.roughnessV,
+                                material.roughnessTexture, node,
+                                "transmission roughness");
                 const Value ior = evaluator.InputOr(node, "ior", "float", "1.5");
                 AssignScalarConstant(ior, material.indexOfRefraction, node, "transmission IOR");
                 CaptureNormal(node);
@@ -852,8 +911,26 @@ private:
             return;
         }
         if (node.category == "sheen_bsdf") {
-            throw std::runtime_error(NodeError(
-                node, "is an active sheen closure not implemented by transport"));
+            AssignScalar(evaluator.InputOr(node, "weight", "float", "1"),
+                         material.sheen, material.sheenTexture,
+                         node, "sheen weight");
+            AssignColor(evaluator.InputOr(node, "color", "color3", "1,1,1"),
+                        material.sheenColor, material.sheenColorTexture,
+                        node, "sheen color");
+            AssignScalar(evaluator.InputOr(node, "roughness", "float", "0.3"),
+                         material.sheenRoughness,
+                         material.sheenRoughnessTexture,
+                         node, "sheen roughness");
+            const Value mode = evaluator.InputOr(
+                node, "mode", "string", "conty_kulla");
+            if (mode.kind != Value::Kind::Text ||
+                (mode.text != "conty_kulla" && mode.text != "zeltner")) {
+                throw std::runtime_error(NodeError(
+                    node, "has an unsupported sheen mode"));
+            }
+            material.sheenMode = mode.text == "zeltner" ? 1U : 0U;
+            CaptureNormal(node);
+            return;
         }
         throw std::runtime_error(NodeError(node, "is an unsupported active BSDF primitive"));
     }
@@ -878,6 +955,7 @@ private:
         std::string& colorTexture = coat
             ? material.coatColorTexture : material.specularColorTexture;
         float& roughness = coat ? material.coatRoughness : material.roughness;
+        float& roughnessV = coat ? material.coatRoughnessV : material.roughnessV;
         std::string& roughnessTexture = coat
             ? material.coatRoughnessTexture : material.roughnessTexture;
         float& ior = coat ? material.coatIndexOfRefraction : material.indexOfRefraction;
@@ -885,8 +963,9 @@ private:
                      weight, weightTexture, node, coat ? "coat weight" : "specular weight");
         AssignColor(evaluator.InputOr(node, "tint", "color3", "1,1,1"),
                     color, colorTexture, node, coat ? "coat tint" : "specular tint");
-        AssignScalar(evaluator.Roughness(node), roughness, roughnessTexture,
-                     node, coat ? "coat roughness" : "specular roughness");
+        AssignRoughness(evaluator.Roughness(node), roughness, roughnessV,
+                        roughnessTexture, node,
+                        coat ? "coat roughness" : "specular roughness");
         AssignScalarConstant(evaluator.InputOr(node, "ior", "float", "1.5"),
                              ior, node, coat ? "coat IOR" : "specular IOR");
         CaptureNormal(node);
@@ -992,6 +1071,32 @@ private:
                 node, "has invalid " + std::string(role)));
         }
         target = source.number[0];
+    }
+
+    static void AssignRoughness(
+        const Value& source, float& roughnessU, float& roughnessV,
+        std::string& texture, const MaterialXProgramNode& node,
+        std::string_view role)
+    {
+        if (source.kind == Value::Kind::Texture) {
+            if (source.textureChannel > 0 || source.textureInverted) {
+                throw std::runtime_error(NodeError(
+                    node, "uses a packed or inverted " + std::string(role)));
+            }
+            texture = source.texture;
+            return;
+        }
+        if (source.kind != Value::Kind::Numeric) {
+            throw std::runtime_error(NodeError(
+                node, "has invalid " + std::string(role)));
+        }
+        // MaterialX primitive BSDF roughness is the microfacet alpha pair.
+        // SceneMaterial retains perceptual roughness for the existing GPU ABI,
+        // which squares it again while evaluating GGX.
+        roughnessU = std::sqrt(std::clamp(source.number[0], 0.0F, 1.0F));
+        roughnessV = std::sqrt(std::clamp(
+            source.type == "vector2" ? source.number[1] : source.number[0],
+            0.0F, 1.0F));
     }
 
     static void AssignColor(
