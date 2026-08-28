@@ -1,4 +1,5 @@
 add_library(hdCodexMaterialX STATIC
+  materialx_closure.cpp
   materialx_compiler.cpp
 )
 add_library(hdCodex::MaterialX ALIAS hdCodexMaterialX)

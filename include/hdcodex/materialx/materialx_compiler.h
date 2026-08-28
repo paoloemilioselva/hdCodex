@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hdcodex/core/shading_mode.h"
+#include "hdcodex/core/versioned_scene.h"
 #include "hdcodex/gpu/glsl_compiler.h"
 #include "hdcodex/gpu/spirv_reflection.h"
 
@@ -8,6 +9,7 @@
 
 #include <string>
 #include <string_view>
+#include <optional>
 #include <vector>
 
 namespace hdcodex {
@@ -63,7 +65,19 @@ struct MaterialXCompiledShader {
     std::vector<MaterialXShaderInput> publicUniforms;
     std::vector<MaterialXShaderInput> textures;
     MaterialXGeneratedProgram program;
+    /// Renderer closure ABI compiled exclusively from the expanded MaterialX
+    /// program. Empty for raster preview or when no path program is requested.
+    std::optional<SceneMaterial> closure;
 };
+
+/// Compiles an expanded MaterialX program into the currently supported
+/// renderer closure ABI. The compiler recognizes only primitive MaterialX
+/// NodeDefs and generic graph combiners; high-level shader names are never
+/// inspected. Unsupported terminal closure semantics remain errors; auxiliary
+/// decorations that the compact ABI cannot encode preserve the supported base.
+[[nodiscard]] SceneMaterial CompileMaterialXClosure(
+    const MaterialXGeneratedProgram& program,
+    std::string_view terminalNodeDef = {});
 
 /// Generates Vulkan GLSL from MaterialX and compiles both stages to cached SPIR-V.
 class MaterialXCompiler final {

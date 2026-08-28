@@ -1,0 +1,1031 @@
+#include "hdcodex/materialx/materialx_compiler.h"
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cmath>
+#include <functional>
+#include <map>
+#include <ranges>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+
+namespace hdcodex {
+namespace {
+
+constexpr float kEpsilon = 1.0e-5F;
+
+struct Value {
+    enum class Kind { Numeric, Text, Texture, Geometric } kind{Kind::Numeric};
+    std::string type;
+    std::array<float, 4> number{};
+    std::string text;
+    std::string texture;
+    int textureChannel{-1};
+    bool textureInverted{false};
+    float normalScale{1.0F};
+};
+
+const MaterialXProgramInput* FindInput(
+    const MaterialXProgramNode& node, std::string_view name)
+{
+    const auto found = std::ranges::find_if(node.inputs, [name](const auto& input) {
+        return input.name == name;
+    });
+    return found == node.inputs.end() ? nullptr : &*found;
+}
+
+std::size_t ComponentCount(std::string_view type)
+{
+    if (type == "color4" || type == "vector4") return 4U;
+    if (type == "color3" || type == "vector3") return 3U;
+    if (type == "vector2") return 2U;
+    return 1U;
+}
+
+Value ParseValue(std::string_view type, std::string_view source)
+{
+    Value result;
+    result.type = std::string(type);
+    if (type == "string" || type == "filename") {
+        result.kind = Value::Kind::Text;
+        result.text = std::string(source);
+        return result;
+    }
+    if (type == "boolean") {
+        result.number[0] = source == "true" || source == "1" ? 1.0F : 0.0F;
+        return result;
+    }
+
+    std::string normalized(source);
+    std::replace(normalized.begin(), normalized.end(), ',', ' ');
+    std::istringstream stream(normalized);
+    const std::size_t count = ComponentCount(type);
+    for (std::size_t component = 0; component < count; ++component) {
+        if (!(stream >> result.number[component])) {
+            if (component == 0U) result.number[0] = 0.0F;
+            else result.number[component] = result.number[component - 1U];
+        }
+    }
+    if (count == 1U) {
+        result.number[1] = result.number[2] = result.number[3] = result.number[0];
+    }
+    return result;
+}
+
+bool Near(float left, float right)
+{
+    return std::abs(left - right) <= kEpsilon;
+}
+
+bool NumericIs(const Value& value, float expected)
+{
+    if (value.kind != Value::Kind::Numeric) return false;
+    const std::size_t count = ComponentCount(value.type);
+    for (std::size_t component = 0; component < count; ++component) {
+        if (!Near(value.number[component], expected)) return false;
+    }
+    return true;
+}
+
+std::string NodeError(const MaterialXProgramNode& node, std::string_view message)
+{
+    return "MaterialX closure node '" + node.name + "' (" + node.nodeDef +
+        ") " + std::string(message);
+}
+
+class ProgramEvaluator final {
+public:
+    explicit ProgramEvaluator(const MaterialXGeneratedProgram& program)
+    {
+        for (const MaterialXProgramNode& node : program.nodes) {
+            _nodes.emplace(node.name, &node);
+        }
+    }
+
+    const MaterialXProgramNode& Node(std::string_view name) const
+    {
+        const auto found = _nodes.find(name);
+        if (found == _nodes.end()) {
+            throw std::runtime_error("MaterialX closure references missing node '" +
+                std::string(name) + "'");
+        }
+        return *found->second;
+    }
+
+    const MaterialXProgramNode& Upstream(
+        const MaterialXProgramNode& node, std::string_view inputName) const
+    {
+        const MaterialXProgramInput* input = FindInput(node, inputName);
+        if (!input || input->upstreamNode.empty()) {
+            throw std::runtime_error(NodeError(
+                node, "has no connected '" + std::string(inputName) + "' input"));
+        }
+        return Node(input->upstreamNode);
+    }
+
+    Value Input(const MaterialXProgramNode& node, std::string_view name) const
+    {
+        const MaterialXProgramInput* input = FindInput(node, name);
+        if (!input) {
+            throw std::runtime_error(NodeError(
+                node, "is missing required input '" + std::string(name) + "'"));
+        }
+        if (input->upstreamNode.empty()) return ParseValue(input->type, input->value);
+        return Evaluate(input->upstreamNode, input->upstreamOutput);
+    }
+
+    Value InputOr(const MaterialXProgramNode& node, std::string_view name,
+                  std::string_view type, std::string_view value) const
+    {
+        return FindInput(node, name) ? Input(node, name) : ParseValue(type, value);
+    }
+
+    Value Evaluate(std::string_view name, std::string_view output = {}) const
+    {
+        const std::string key = std::string(name) + "." + std::string(output);
+        if (const auto cached = _cache.find(key); cached != _cache.end()) {
+            return cached->second;
+        }
+        if (!_active.insert(key).second) {
+            throw std::runtime_error("cycle in expanded MaterialX closure program at '" +
+                std::string(name) + "'");
+        }
+        Value result = EvaluateNode(Node(name), output);
+        if (result.kind == Value::Kind::Numeric &&
+            ComponentCount(result.type) == 1U) {
+            result.number[1] = result.number[2] = result.number[3] = result.number[0];
+        }
+        _active.erase(key);
+        _cache.emplace(key, result);
+        return result;
+    }
+
+    Value Roughness(const MaterialXProgramNode& closure) const
+    {
+        const MaterialXProgramInput* input = FindInput(closure, "roughness");
+        if (!input) return ParseValue("float", "0");
+        if (input->upstreamNode.empty()) return ParseValue(input->type, input->value);
+        const Value value = Evaluate(input->upstreamNode, input->upstreamOutput);
+        if (value.type == "vector2") {
+            Value scalar = value;
+            scalar.type = "float";
+            scalar.number[0] = value.number[0];
+            return scalar;
+        }
+        return value;
+    }
+
+    Value NormalTexture(const MaterialXProgramNode& closure) const
+    {
+        const MaterialXProgramInput* input = FindInput(closure, "normal");
+        if (!input || input->upstreamNode.empty()) return {};
+        const MaterialXProgramNode& normal = Node(input->upstreamNode);
+        if (normal.category == "normal") {
+            Value none;
+            none.kind = Value::Kind::Geometric;
+            return none;
+        }
+        if (normal.category == "normalmap") {
+            const Value scale = InputOr(normal, "scale", "float", "1");
+            if (scale.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    normal, "uses a texture-driven normal-map scale"));
+            }
+            Value mapped;
+            try {
+                mapped = FindInput(normal, "in")
+                    ? Input(normal, "in") : Input(normal, "normal");
+            } catch (const std::runtime_error&) {
+                Value none;
+                none.kind = Value::Kind::Geometric;
+                return none;
+            }
+            if (mapped.kind != Value::Kind::Texture) {
+                throw std::runtime_error(NodeError(
+                    normal, "does not resolve to one image texture"));
+            }
+            mapped.normalScale = scale.number[0];
+            return mapped;
+        }
+        Value none;
+        none.kind = Value::Kind::Geometric;
+        return none;
+    }
+
+private:
+    Value EvaluateNode(
+        const MaterialXProgramNode& node, std::string_view output) const
+    {
+        if (node.category == "image") {
+            const MaterialXProgramInput* fileInput = FindInput(node, "file");
+            const Value file = fileInput
+                ? Input(node, "file") : ParseValue("filename", "");
+            if (file.kind != Value::Kind::Text) {
+                throw std::runtime_error(NodeError(node, "has a non-filename file input"));
+            }
+            if (file.text.empty()) {
+                if (FindInput(node, "default")) return Input(node, "default");
+                Value fallback = ParseValue(node.type, "0");
+                fallback.type = node.type;
+                return fallback;
+            }
+            Value result;
+            result.kind = Value::Kind::Texture;
+            result.type = node.type;
+            result.texture = file.text;
+            return result;
+        }
+        if (node.category == "geompropvalue" || node.category == "normal" ||
+            node.category == "tangent" || node.category == "bitangent" ||
+            node.category == "position" || node.category == "texcoord") {
+            Value result;
+            result.kind = Value::Kind::Geometric;
+            result.type = node.type;
+            return result;
+        }
+        if (node.type == "vector2" && FindInput(node, "roughness") &&
+            FindInput(node, "anisotropy")) {
+            const Value roughness = Input(node, "roughness");
+            const Value anisotropy = InputOr(node, "anisotropy", "float", "0");
+            if (roughness.kind == Value::Kind::Texture) {
+                Value result = roughness;
+                result.type = "vector2";
+                return result;
+            }
+            if (roughness.kind != Value::Kind::Numeric ||
+                anisotropy.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has a non-constant vector result"));
+            }
+            Value result = roughness;
+            result.type = "vector2";
+            result.number[1] = anisotropy.number[0];
+            return result;
+        }
+        if (node.category == "artistic_ior") {
+            const Value reflectivity = Input(node, "reflectivity");
+            const Value edgeColor = Input(node, "edge_color");
+            if (reflectivity.kind != Value::Kind::Numeric ||
+                edgeColor.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has texture-driven complex IOR unsupported by this ABI"));
+            }
+            Value ior = reflectivity;
+            Value extinction = reflectivity;
+            ior.type = extinction.type = "color3";
+            for (std::size_t component = 0; component < 3U; ++component) {
+                const float r = std::clamp(reflectivity.number[component], 0.0F, 0.99F);
+                const float root = std::sqrt(r);
+                const float minimum = (1.0F - r) / (1.0F + r);
+                const float maximum = (1.0F + root) / std::max(1.0F - root, kEpsilon);
+                const float eta = maximum * (1.0F - edgeColor.number[component]) +
+                    minimum * edgeColor.number[component];
+                const float plus = eta + 1.0F;
+                const float minus = eta - 1.0F;
+                const float k2 = std::max(
+                    (plus * plus * r - minus * minus) / std::max(1.0F - r, kEpsilon),
+                    0.0F);
+                ior.number[component] = eta;
+                extinction.number[component] = std::sqrt(k2);
+            }
+            return output == "extinction" ? extinction : ior;
+        }
+
+        if (node.category == "convert") {
+            Value result = Input(node, "in");
+            result.type = node.type;
+            if (result.kind == Value::Kind::Numeric) {
+                const std::size_t count = ComponentCount(node.type);
+                if (count > 1U && ComponentCount(FindInput(node, "in")->type) == 1U) {
+                    for (std::size_t component = 1; component < count; ++component) {
+                        result.number[component] = result.number[0];
+                    }
+                }
+            }
+            return result;
+        }
+        if (node.category == "extract") {
+            Value result = Input(node, "in");
+            const Value index = InputOr(node, "index", "integer", "0");
+            const int component = static_cast<int>(index.number[0]);
+            if (component < 0 || component > 3) {
+                throw std::runtime_error(NodeError(node, "has an invalid extract index"));
+            }
+            result.number[0] = result.number[static_cast<std::size_t>(component)];
+            result.type = node.type;
+            result.textureChannel = component;
+            return result;
+        }
+        if (node.category == "invert") {
+            Value result = Input(node, "in");
+            if (result.kind == Value::Kind::Texture) {
+                result.textureInverted = !result.textureInverted;
+                result.type = node.type;
+                return result;
+            }
+            if (result.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has a non-numeric invert input"));
+            }
+            const std::size_t count = ComponentCount(node.type);
+            for (std::size_t component = 0; component < count; ++component) {
+                result.number[component] = 1.0F - result.number[component];
+            }
+            result.type = node.type;
+            return result;
+        }
+        if (node.category == "combine3") {
+            const Value red = Input(node, "in1");
+            const Value green = Input(node, "in2");
+            const Value blue = Input(node, "in3");
+            if (red.kind == Value::Kind::Texture &&
+                green.kind == Value::Kind::Texture &&
+                blue.kind == Value::Kind::Texture &&
+                red.texture == green.texture && red.texture == blue.texture &&
+                red.textureChannel == 0 && green.textureChannel == 1 &&
+                blue.textureChannel == 2 && !red.textureInverted &&
+                !blue.textureInverted) {
+                Value result = red;
+                result.type = node.type;
+                result.textureChannel = -1;
+                // Preserve the only non-identity operation in the common
+                // MaterialX normal-map channel reconstruction.
+                result.textureInverted = green.textureInverted;
+                return result;
+            }
+            if (red.kind == Value::Kind::Numeric &&
+                green.kind == Value::Kind::Numeric &&
+                blue.kind == Value::Kind::Numeric) {
+                Value result = red;
+                result.type = node.type;
+                result.number = {red.number[0], green.number[0], blue.number[0], 0.0F};
+                return result;
+            }
+            throw std::runtime_error(NodeError(
+                node, "does not combine three channels from one image"));
+        }
+        if (node.category == "luminance") {
+            const Value input = Input(node, "in");
+            if (input.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "uses texture luminance unsupported by this ABI"));
+            }
+            Value result = input;
+            const float luminance = input.number[0] * 0.2126F +
+                input.number[1] * 0.7152F + input.number[2] * 0.0722F;
+            result.number = {luminance, luminance, luminance, luminance};
+            result.type = node.type;
+            return result;
+        }
+        if (node.category == "ifgreater") {
+            const Value left = Input(node, "value1");
+            const Value right = Input(node, "value2");
+            if (left.kind != Value::Kind::Numeric || right.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has a dynamic comparison"));
+            }
+            return Input(node, left.number[0] > right.number[0] ? "in1" : "in2");
+        }
+        if (node.category == "clamp") {
+            Value input = Input(node, "in");
+            const Value low = InputOr(node, "low", node.type, "0");
+            const Value high = InputOr(node, "high", node.type, "1");
+            if (input.kind == Value::Kind::Texture) {
+                return input;
+            }
+            if (input.kind != Value::Kind::Numeric || low.kind != Value::Kind::Numeric ||
+                high.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has non-numeric clamp inputs"));
+            }
+            const std::size_t count = ComponentCount(node.type);
+            for (std::size_t component = 0; component < count; ++component) {
+                input.number[component] = std::clamp(
+                    input.number[component], low.number[component], high.number[component]);
+            }
+            input.type = node.type;
+            return input;
+        }
+        if (node.category == "mix") {
+            const Value amount = Input(node, "mix");
+            if (amount.kind != Value::Kind::Numeric) {
+                const Value background = Input(node, "bg");
+                if (background.kind == Value::Kind::Texture) return background;
+                const Value foreground = Input(node, "fg");
+                if (foreground.kind == Value::Kind::Texture) return foreground;
+                return background;
+            }
+            if (Near(amount.number[0], 0.0F)) return Input(node, "bg");
+            if (Near(amount.number[0], 1.0F)) return Input(node, "fg");
+            const Value foreground = Input(node, "fg");
+            const Value background = Input(node, "bg");
+            if (foreground.kind == Value::Kind::Texture) return foreground;
+            if (background.kind == Value::Kind::Texture) return background;
+            if (foreground.kind != Value::Kind::Numeric ||
+                background.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "mixes texture values"));
+            }
+            Value result = background;
+            const std::size_t count = ComponentCount(node.type);
+            for (std::size_t component = 0; component < count; ++component) {
+                result.number[component] = foreground.number[component] * amount.number[0] +
+                    background.number[component] * (1.0F - amount.number[0]);
+            }
+            result.type = node.type;
+            return result;
+        }
+
+        const auto binary = [&](auto operation, bool textureIdentity) {
+            const Value left = Input(node, "in1");
+            const Value right = Input(node, "in2");
+            if (left.kind == Value::Kind::Texture || right.kind == Value::Kind::Texture) {
+                if (textureIdentity) {
+                    if (left.kind == Value::Kind::Texture && NumericIs(right, 1.0F)) {
+                        return left;
+                    }
+                    if (right.kind == Value::Kind::Texture && NumericIs(left, 1.0F)) {
+                        return right;
+                    }
+                }
+                if (left.kind == Value::Kind::Texture) return left;
+                if (right.kind == Value::Kind::Texture) return right;
+            }
+            if (left.kind != Value::Kind::Numeric || right.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has non-numeric operands"));
+            }
+            Value result = left;
+            result.type = node.type;
+            const std::size_t count = ComponentCount(node.type);
+            for (std::size_t component = 0; component < count; ++component) {
+                result.number[component] = operation(
+                    left.number[component], right.number[component]);
+            }
+            return result;
+        };
+
+        if (node.category == "add") return binary(std::plus<float>{}, false);
+        if (node.category == "subtract") return binary(std::minus<float>{}, false);
+        if (node.category == "multiply") return binary(std::multiplies<float>{}, true);
+        if (node.category == "divide") {
+            return binary([](float left, float right) {
+                return left / right;
+            }, false);
+        }
+        if (node.category == "power") {
+            const Value base = Input(node, "in1");
+            const Value exponent = Input(node, "in2");
+            if (base.kind == Value::Kind::Texture && NumericIs(exponent, 1.0F)) {
+                return base;
+            }
+            if (base.kind == Value::Kind::Texture) return base;
+            return binary([](float left, float right) {
+                return std::pow(std::max(left, 0.0F), right);
+            }, false);
+        }
+        if (node.category == "min" || node.category == "max") {
+            const Value left = Input(node, "in1");
+            const Value right = Input(node, "in2");
+            if (left.kind == Value::Kind::Texture && NumericIs(right,
+                    node.category == "max" ? 0.0F : 1.0F)) return left;
+            if (right.kind == Value::Kind::Texture && NumericIs(left,
+                    node.category == "max" ? 0.0F : 1.0F)) return right;
+            return node.category == "min"
+                ? binary([](float a, float b) { return std::min(a, b); }, false)
+                : binary([](float a, float b) { return std::max(a, b); }, false);
+        }
+        if (node.category == "sqrt" || node.category == "sign" ||
+            node.category == "ln" || node.category == "normalize") {
+            Value result = Input(node, "in");
+            if (result.kind == Value::Kind::Geometric && node.category == "normalize") {
+                return result;
+            }
+            if (result.kind == Value::Kind::Texture) return result;
+            if (result.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has a dynamic unary operand"));
+            }
+            const std::size_t count = ComponentCount(node.type);
+            for (std::size_t component = 0; component < count; ++component) {
+                float& value = result.number[component];
+                if (node.category == "sqrt") value = std::sqrt(std::max(value, 0.0F));
+                else if (node.category == "sign") value = value < 0.0F ? -1.0F : 1.0F;
+                else if (node.category == "ln") value = std::log(std::max(value, kEpsilon));
+            }
+            result.type = node.type;
+            return result;
+        }
+
+        if (node.category == "colorcorrect" || node.category == "remap") {
+            if (FindInput(node, "in")) return Input(node, "in");
+            if (FindInput(node, "input")) return Input(node, "input");
+        }
+        if (node.category == "saturate") {
+            Value result = Input(node, "in");
+            if (result.kind == Value::Kind::Texture) return result;
+            if (result.kind == Value::Kind::Numeric) {
+                const std::size_t count = ComponentCount(node.type);
+                for (std::size_t component = 0; component < count; ++component) {
+                    result.number[component] = std::clamp(
+                        result.number[component], 0.0F, 1.0F);
+                }
+                result.type = node.type;
+                return result;
+            }
+        }
+        if (node.category == "ramp4") {
+            std::array<Value, 4> corners{
+                Input(node, "valuetl"), Input(node, "valuetr"),
+                Input(node, "valuebl"), Input(node, "valuebr")};
+            if (std::ranges::all_of(corners, [](const Value& value) {
+                    return value.kind == Value::Kind::Numeric;
+                })) {
+                Value result = corners.front();
+                const std::size_t count = ComponentCount(node.type);
+                for (std::size_t component = 0; component < count; ++component) {
+                    result.number[component] = 0.25F * (
+                        corners[0].number[component] + corners[1].number[component] +
+                        corners[2].number[component] + corners[3].number[component]);
+                }
+                result.type = node.type;
+                return result;
+            }
+        }
+
+        throw std::runtime_error(NodeError(node, "is an unsupported active value operation"));
+    }
+
+    std::map<std::string, const MaterialXProgramNode*, std::less<>> _nodes;
+    mutable std::map<std::string, Value, std::less<>> _cache;
+    mutable std::set<std::string, std::less<>> _active;
+};
+
+enum ClosureBits : unsigned int {
+    ClosureNone = 0U,
+    ClosureDiffuse = 1U << 0U,
+    ClosureConductor = 1U << 1U,
+    ClosureReflection = 1U << 2U,
+    ClosureTransmission = 1U << 3U,
+    ClosureSubsurface = 1U << 4U,
+    ClosureSheen = 1U << 5U,
+};
+
+struct ClosureCompiler final {
+    explicit ClosureCompiler(const MaterialXGeneratedProgram& source)
+        : program(source), evaluator(source) {}
+
+    SceneMaterial Compile(std::string_view terminalNodeDef)
+    {
+        if (program.outputNode.empty()) {
+            throw std::runtime_error("MaterialX closure program has no output node");
+        }
+        const MaterialXProgramNode& surface = evaluator.Node(program.outputNode);
+        if (surface.nodeDef != "ND_surface" && surface.category != "surface") {
+            throw std::runtime_error(NodeError(
+                surface, "is not the supported MaterialX surface constructor"));
+        }
+        material.shaderNodeId = std::string(terminalNodeDef);
+        material.materialXOutputNode = program.outputNode;
+
+        if (const MaterialXProgramInput* opacity = FindInput(surface, "opacity")) {
+            AssignScalar(evaluator.Input(surface, opacity->name),
+                         material.opacity, material.opacityTexture, surface, "opacity");
+        }
+        if (const MaterialXProgramInput* bsdf = FindInput(surface, "bsdf");
+            bsdf && !bsdf->upstreamNode.empty()) {
+            VisitBsdf(evaluator.Node(bsdf->upstreamNode), 0, false);
+        }
+        if (const MaterialXProgramInput* edf = FindInput(surface, "edf");
+            edf && !edf->upstreamNode.empty()) {
+            try {
+                const Value emission = EvaluateEdf(evaluator.Node(edf->upstreamNode));
+                AssignColor(emission, material.emission, material.emissionTexture,
+                            surface, "emission");
+                material.emissionWeight = 1.0F;
+            } catch (const std::runtime_error&) {
+                // An unsupported emission decoration must not erase the
+                // independently supported surface BSDF.
+            }
+        }
+        FinalizeDielectrics();
+        return material;
+    }
+
+private:
+    struct Dielectric {
+        const MaterialXProgramNode* node{};
+        int layerDepth{};
+    };
+
+    unsigned int Classify(const MaterialXProgramNode& node)
+    {
+        if (node.category == "oren_nayar_diffuse_bsdf" ||
+            node.category == "burley_diffuse_bsdf") return ClosureDiffuse;
+        if (node.category == "conductor_bsdf" ||
+            node.category == "generalized_schlick_bsdf") return ClosureConductor;
+        if (node.category == "dielectric_bsdf") {
+            const Value mode = evaluator.InputOr(node, "scatter_mode", "string", "R");
+            return mode.text == "T" ? ClosureTransmission : ClosureReflection;
+        }
+        if (node.category == "subsurface_bsdf" ||
+            node.category == "translucent_bsdf") return ClosureSubsurface;
+        if (node.category == "sheen_bsdf") return ClosureSheen;
+        if (node.category == "mix" || node.category == "layer") {
+            unsigned int result = ClosureNone;
+            for (const char* name : {"fg", "bg", "top", "base"}) {
+                const MaterialXProgramInput* input = FindInput(node, name);
+                if (input && !input->upstreamNode.empty() && input->type == "BSDF") {
+                    result |= Classify(evaluator.Node(input->upstreamNode));
+                }
+            }
+            return result;
+        }
+        if (node.category == "multiply" && node.type == "BSDF") {
+            return Classify(evaluator.Upstream(node, "in1"));
+        }
+        return ClosureNone;
+    }
+
+    bool Inactive(const MaterialXProgramNode& node)
+    {
+        if (!FindInput(node, "weight")) return false;
+        const Value weight = evaluator.Input(node, "weight");
+        return NumericIs(weight, 0.0F);
+    }
+
+    void VisitBsdf(const MaterialXProgramNode& node, int layerDepth, bool topLayer)
+    {
+        if (node.category == "mix") {
+            const Value amount = evaluator.Input(node, "mix");
+            const MaterialXProgramNode& foreground = evaluator.Upstream(node, "fg");
+            const MaterialXProgramNode& background = evaluator.Upstream(node, "bg");
+            const unsigned int foregroundKind = Classify(foreground);
+            const unsigned int backgroundKind = Classify(background);
+            bool semanticMix = false;
+            if ((foregroundKind & ClosureConductor) != 0U &&
+                (backgroundKind & ClosureConductor) == 0U) {
+                AssignScalar(amount, material.metalness, material.metalnessTexture,
+                             node, "metalness mix");
+                semanticMix = true;
+            } else if ((foregroundKind & ClosureTransmission) != 0U &&
+                       (backgroundKind & ClosureTransmission) == 0U) {
+                AssignScalarConstant(
+                    amount, material.transmission, node, "transmission mix");
+                semanticMix = true;
+            } else if ((foregroundKind & ClosureSubsurface) != 0U &&
+                       (backgroundKind & ClosureDiffuse) != 0U) {
+                AssignScalar(amount, material.subsurface,
+                             material.subsurfaceTexture, node, "subsurface mix");
+                semanticMix = true;
+            }
+            if (amount.kind == Value::Kind::Numeric && Near(amount.number[0], 0.0F)) {
+                VisitBsdf(background, layerDepth, topLayer);
+                return;
+            }
+            if (amount.kind == Value::Kind::Numeric && Near(amount.number[0], 1.0F)) {
+                VisitBsdf(foreground, layerDepth, topLayer);
+                return;
+            }
+            if (!semanticMix && foregroundKind == backgroundKind) {
+                // The selected implementations represent the same closure
+                // class (for example thin-film on/off); visit both only when
+                // the mix is genuinely dynamic.
+            } else if (!semanticMix &&
+                       ((foregroundKind & (ClosureDiffuse | ClosureSubsurface)) != 0U) &&
+                       ((backgroundKind & (ClosureDiffuse | ClosureSubsurface)) != 0U)) {
+                material.thinWalled = true;
+            } else if (!semanticMix) {
+                throw std::runtime_error(NodeError(
+                    node, "is an active closure mix not representable by the current ABI"));
+            }
+            VisitBsdf(foreground, layerDepth, topLayer);
+            VisitBsdf(background, layerDepth, topLayer);
+            return;
+        }
+        if (node.category == "layer") {
+            const MaterialXProgramInput* top = FindInput(node, "top");
+            const MaterialXProgramInput* base = FindInput(node, "base");
+            if (top && !top->upstreamNode.empty()) {
+                const MaterialXProgramNode& topNode = evaluator.Node(top->upstreamNode);
+                // Sheen transport is not implemented yet, but it must not
+                // erase an otherwise supported layered base closure.
+                if ((Classify(topNode) & ~ClosureSheen) != 0U ||
+                    Classify(topNode) != ClosureSheen) {
+                    VisitBsdf(topNode, layerDepth, true);
+                }
+            }
+            if (base && !base->upstreamNode.empty()) {
+                const MaterialXProgramNode& baseNode = evaluator.Node(base->upstreamNode);
+                if (base->type == "VDF") {
+                    try {
+                        ParseVdf(baseNode);
+                    } catch (const std::runtime_error&) {
+                        // Keep the supported boundary closure when a
+                        // procedural volume exceeds the compact ABI.
+                    }
+                }
+                else VisitBsdf(baseNode, layerDepth + 1, false);
+            }
+            return;
+        }
+        if (node.category == "multiply" && node.type == "BSDF") {
+            VisitBsdf(evaluator.Upstream(node, "in1"), layerDepth, topLayer);
+            Value tint;
+            try {
+                tint = evaluator.Input(node, "in2");
+            } catch (const std::runtime_error&) {
+                return;
+            }
+            if (tint.kind == Value::Kind::Numeric && !NumericIs(tint, 1.0F)) {
+                const std::size_t count = ComponentCount(tint.type);
+                const auto scale = [&](std::array<float, 3>& color,
+                                       const std::string& texture) {
+                    if (!texture.empty()) return;
+                    for (std::size_t component = 0; component < 3U; ++component) {
+                        color[component] *= tint.number[
+                            count == 1U ? 0U : component];
+                    }
+                };
+                scale(material.baseColor, material.baseColorTexture);
+                scale(material.transmissionColor, material.transmissionTexture);
+                scale(material.specularColor, material.specularColorTexture);
+                scale(material.coatColor, material.coatColorTexture);
+                scale(material.subsurfaceColor, material.subsurfaceColorTexture);
+            }
+            // A texture-driven BSDF energy compensation term is not yet part
+            // of the compact transport ABI. Retain the supported closure and
+            // its source textures instead of deleting the whole material.
+            return;
+        }
+        if (Inactive(node)) return;
+
+        if (node.category == "oren_nayar_diffuse_bsdf" ||
+            node.category == "burley_diffuse_bsdf") {
+            AssignColor(evaluator.Input(node, "color"), material.baseColor,
+                        material.baseColorTexture, node, "diffuse color");
+            CaptureNormal(node);
+            return;
+        }
+        if (node.category == "conductor_bsdf" ||
+            node.category == "generalized_schlick_bsdf") {
+            Value reflectivity;
+            if (node.category == "generalized_schlick_bsdf") {
+                reflectivity = evaluator.Input(node, "color0");
+            } else {
+                const MaterialXProgramInput* iorInput = FindInput(node, "ior");
+                if (!iorInput || iorInput->upstreamNode.empty()) {
+                    throw std::runtime_error(NodeError(node, "has no generated IOR source"));
+                }
+                const MaterialXProgramNode& source = evaluator.Node(iorInput->upstreamNode);
+                if (source.category == "artistic_ior") {
+                    reflectivity = evaluator.Input(source, "reflectivity");
+                } else {
+                    const Value eta = evaluator.Input(node, "ior");
+                    const Value extinction = evaluator.Input(node, "extinction");
+                    if (eta.kind != Value::Kind::Numeric ||
+                        extinction.kind != Value::Kind::Numeric) {
+                        throw std::runtime_error(NodeError(
+                            node, "has texture-driven complex IOR unsupported by this ABI"));
+                    }
+                    reflectivity = eta;
+                    reflectivity.type = "color3";
+                    for (std::size_t component = 0; component < 3U; ++component) {
+                        const float e = eta.number[component];
+                        const float k = extinction.number[component];
+                        reflectivity.number[component] =
+                            ((e - 1.0F) * (e - 1.0F) + k * k) /
+                            ((e + 1.0F) * (e + 1.0F) + k * k);
+                    }
+                }
+            }
+            AssignColor(reflectivity, material.baseColor,
+                        material.baseColorTexture, node, "conductor reflectivity");
+            AssignScalar(evaluator.Roughness(node), material.roughness,
+                         material.roughnessTexture, node, "conductor roughness");
+            CaptureNormal(node);
+            return;
+        }
+        if (node.category == "dielectric_bsdf") {
+            const Value mode = evaluator.InputOr(node, "scatter_mode", "string", "R");
+            if (mode.kind != Value::Kind::Text) {
+                throw std::runtime_error(NodeError(node, "has a dynamic scatter mode"));
+            }
+            if (mode.text == "T") {
+                if (material.transmission <= 0.0F && material.transmissionTexture.empty()) {
+                    material.transmission = 1.0F;
+                }
+                AssignColor(evaluator.InputOr(node, "tint", "color3", "1,1,1"),
+                            material.transmissionColor, material.transmissionTexture,
+                            node, "transmission tint");
+                const Value roughness = evaluator.Roughness(node);
+                AssignScalar(roughness, material.roughness,
+                             material.roughnessTexture, node, "transmission roughness");
+                const Value ior = evaluator.InputOr(node, "ior", "float", "1.5");
+                AssignScalarConstant(ior, material.indexOfRefraction, node, "transmission IOR");
+                CaptureNormal(node);
+            } else if (mode.text == "R") {
+                dielectrics.push_back({&node, topLayer ? layerDepth : layerDepth + 1000});
+            } else {
+                throw std::runtime_error(NodeError(node, "has an unsupported scatter mode"));
+            }
+            return;
+        }
+        if (node.category == "subsurface_bsdf") {
+            if (material.subsurface <= 0.0F && material.subsurfaceTexture.empty()) {
+                material.subsurface = 1.0F;
+            }
+            AssignColor(evaluator.Input(node, "color"), material.subsurfaceColor,
+                        material.subsurfaceColorTexture, node, "subsurface color");
+            AssignColor(evaluator.Input(node, "radius"), material.subsurfaceRadius,
+                        material.subsurfaceRadiusTexture, node, "subsurface radius");
+            AssignScalarConstant(evaluator.InputOr(node, "anisotropy", "float", "0"),
+                                 material.subsurfaceScatterAnisotropy,
+                                 node, "subsurface anisotropy");
+            CaptureNormal(node);
+            return;
+        }
+        if (node.category == "translucent_bsdf") {
+            material.thinWalled = true;
+            if (material.subsurface <= 0.0F) material.subsurface = 1.0F;
+            AssignColor(evaluator.Input(node, "color"), material.subsurfaceColor,
+                        material.subsurfaceColorTexture, node, "translucent color");
+            CaptureNormal(node);
+            return;
+        }
+        if (node.category == "sheen_bsdf") {
+            throw std::runtime_error(NodeError(
+                node, "is an active sheen closure not implemented by transport"));
+        }
+        throw std::runtime_error(NodeError(node, "is an unsupported active BSDF primitive"));
+    }
+
+    void FinalizeDielectrics()
+    {
+        if (dielectrics.empty()) return;
+        std::ranges::sort(dielectrics, {}, &Dielectric::layerDepth);
+        const Dielectric& base = dielectrics.back();
+        AssignDielectric(*base.node, false);
+        if (dielectrics.size() > 1U) {
+            const Dielectric& coat = dielectrics.front();
+            if (coat.node != base.node) AssignDielectric(*coat.node, true);
+        }
+    }
+
+    void AssignDielectric(const MaterialXProgramNode& node, bool coat)
+    {
+        float& weight = coat ? material.coat : material.specularWeight;
+        std::string& weightTexture = coat ? material.coatTexture : material.specularTexture;
+        auto& color = coat ? material.coatColor : material.specularColor;
+        std::string& colorTexture = coat
+            ? material.coatColorTexture : material.specularColorTexture;
+        float& roughness = coat ? material.coatRoughness : material.roughness;
+        std::string& roughnessTexture = coat
+            ? material.coatRoughnessTexture : material.roughnessTexture;
+        float& ior = coat ? material.coatIndexOfRefraction : material.indexOfRefraction;
+        AssignScalar(evaluator.InputOr(node, "weight", "float", "1"),
+                     weight, weightTexture, node, coat ? "coat weight" : "specular weight");
+        AssignColor(evaluator.InputOr(node, "tint", "color3", "1,1,1"),
+                    color, colorTexture, node, coat ? "coat tint" : "specular tint");
+        AssignScalar(evaluator.Roughness(node), roughness, roughnessTexture,
+                     node, coat ? "coat roughness" : "specular roughness");
+        AssignScalarConstant(evaluator.InputOr(node, "ior", "float", "1.5"),
+                             ior, node, coat ? "coat IOR" : "specular IOR");
+        CaptureNormal(node);
+    }
+
+    void ParseVdf(const MaterialXProgramNode& node)
+    {
+        if (node.category != "anisotropic_vdf" && node.category != "absorption_vdf") {
+            throw std::runtime_error(NodeError(node, "is an unsupported VDF primitive"));
+        }
+        const Value absorption = evaluator.InputOr(
+            node, "absorption", "vector3", "0,0,0");
+        const Value scattering = evaluator.InputOr(
+            node, "scattering", "vector3", "0,0,0");
+        if (absorption.kind != Value::Kind::Numeric ||
+            scattering.kind != Value::Kind::Numeric) {
+            throw std::runtime_error(NodeError(node, "has texture-driven volume coefficients"));
+        }
+        material.transmissionDepth = 1.0F;
+        for (std::size_t component = 0; component < 3U; ++component) {
+            material.transmissionColor[component] =
+                std::exp(-std::max(absorption.number[component], 0.0F));
+            material.transmissionScatter[component] =
+                std::max(scattering.number[component], 0.0F);
+        }
+        AssignScalarConstant(evaluator.InputOr(node, "anisotropy", "float", "0"),
+                             material.transmissionScatterAnisotropy,
+                             node, "volume anisotropy");
+    }
+
+    Value EvaluateEdf(const MaterialXProgramNode& node)
+    {
+        if (node.category == "uniform_edf") return evaluator.Input(node, "color");
+        if (node.category == "generalized_schlick_edf") {
+            return EvaluateEdf(evaluator.Upstream(node, "base"));
+        }
+        if (node.category == "mix") {
+            const Value amount = evaluator.Input(node, "mix");
+            if (amount.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "has a dynamic EDF mix"));
+            }
+            if (Near(amount.number[0], 0.0F)) {
+                return EvaluateEdf(evaluator.Upstream(node, "bg"));
+            }
+            if (Near(amount.number[0], 1.0F)) {
+                return EvaluateEdf(evaluator.Upstream(node, "fg"));
+            }
+            throw std::runtime_error(NodeError(
+                node, "has a partial EDF mix unsupported by transport"));
+        }
+        if (node.category == "multiply" && node.type == "EDF") {
+            Value base = EvaluateEdf(evaluator.Upstream(node, "in1"));
+            const Value tint = evaluator.Input(node, "in2");
+            if (base.kind != Value::Kind::Numeric || tint.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(node, "multiplies a texture EDF"));
+            }
+            for (std::size_t component = 0; component < 3U; ++component) {
+                base.number[component] *= tint.number[component];
+            }
+            return base;
+        }
+        throw std::runtime_error(NodeError(node, "is an unsupported active EDF primitive"));
+    }
+
+    void CaptureNormal(const MaterialXProgramNode& node)
+    {
+        const Value normal = evaluator.NormalTexture(node);
+        if (normal.kind != Value::Kind::Texture) return;
+        if (!material.normalTexture.empty() && material.normalTexture != normal.texture) {
+            throw std::runtime_error(NodeError(
+                node, "uses a different normal map from another active lobe"));
+        }
+        material.normalTexture = normal.texture;
+        material.normalTextureFlipY = normal.textureInverted;
+        material.normalTextureScale = normal.normalScale;
+    }
+
+    static void AssignScalarConstant(
+        const Value& source, float& target,
+        const MaterialXProgramNode& node, std::string_view role)
+    {
+        if (source.kind != Value::Kind::Numeric) {
+            throw std::runtime_error(NodeError(
+                node, "has non-constant " + std::string(role)));
+        }
+        target = source.number[0];
+    }
+
+    static void AssignScalar(
+        const Value& source, float& target, std::string& texture,
+        const MaterialXProgramNode& node, std::string_view role)
+    {
+        if (source.kind == Value::Kind::Texture) {
+            if (source.textureChannel > 0 || source.textureInverted) {
+                throw std::runtime_error(NodeError(
+                    node, "uses a packed or inverted scalar texture channel"));
+            }
+            texture = source.texture;
+            return;
+        }
+        if (source.kind != Value::Kind::Numeric) {
+            throw std::runtime_error(NodeError(
+                node, "has invalid " + std::string(role)));
+        }
+        target = source.number[0];
+    }
+
+    static void AssignColor(
+        const Value& source, std::array<float, 3>& target, std::string& texture,
+        const MaterialXProgramNode& node, std::string_view role)
+    {
+        if (source.kind == Value::Kind::Texture) {
+            if (source.textureChannel >= 0 || source.textureInverted) {
+                throw std::runtime_error(NodeError(
+                    node, "uses a swizzled or inverted color texture"));
+            }
+            texture = source.texture;
+            return;
+        }
+        if (source.kind != Value::Kind::Numeric) {
+            throw std::runtime_error(NodeError(
+                node, "has invalid " + std::string(role)));
+        }
+        std::copy_n(source.number.begin(), 3U, target.begin());
+    }
+
+    const MaterialXGeneratedProgram& program;
+    ProgramEvaluator evaluator;
+    SceneMaterial material;
+    std::vector<Dielectric> dielectrics;
+};
+
+} // namespace
+
+SceneMaterial CompileMaterialXClosure(
+    const MaterialXGeneratedProgram& program,
+    std::string_view terminalNodeDef)
+{
+    return ClosureCompiler(program).Compile(terminalNodeDef);
+}
+
+} // namespace hdcodex

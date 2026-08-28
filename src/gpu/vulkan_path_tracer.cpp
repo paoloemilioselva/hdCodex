@@ -383,7 +383,8 @@ float surfaceOpacity(uint primitive, vec2 barycentrics)
 )glsl"
 R"glsl(
 
-vec3 applyNormalMap(uint textureIndex, vec2 uv, vec3 geometricNormal,
+vec3 applyNormalMap(uint textureIndex, bool flipY, float scale,
+                    vec2 uv, vec3 geometricNormal,
                     vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2)
 {
     if (textureIndex == 0xffffffffu) return geometricNormal;
@@ -399,6 +400,8 @@ vec3 applyNormalMap(uint textureIndex, vec2 uv, vec3 geometricNormal,
     if (determinant < 0.0) bitangent = -bitangent;
     vec3 mapped = sampleMaterialTexture(textureIndex, uv, vec4(0.5, 0.5, 1.0, 1.0)).xyz;
     mapped = mapped * 2.0 - 1.0;
+    if (flipY) mapped.y = -mapped.y;
+    mapped.xy *= scale;
     vec3 result = normalize(tangent * mapped.x + bitangent * mapped.y +
                             geometricNormal * mapped.z);
     return dot(result, geometricNormal) < 0.0 ? -result : result;
@@ -706,7 +709,10 @@ void main()
         float roughness = clamp(sampleMaterialTexture(
             material.textureIndices0.z, surfaceUv,
             vec4(material.emissionRoughness.a)).r, 0.02, 1.0);
-        normal = applyNormalMap(material.textureIndices1.y, surfaceUv, normal,
+        normal = applyNormalMap(material.textureIndices1.y,
+                                material.coatWeightRoughnessIor.w > 0.5,
+                                material.subsurfaceWeightScale.w,
+                                surfaceUv, normal,
                                 p0, p1, p2, uv0, uv1, uv2);
         vec3 emissionRgb = material.textureIndices0.w == 0xffffffffu
             ? material.emissionRoughness.rgb
@@ -1734,7 +1740,8 @@ public:
                 {material.transmissionColor[0], material.transmissionColor[1],
                  material.transmissionColor[2], material.thinWalled ? 1.0F : 0.0F},
                 {material.subsurface, material.subsurfaceScale,
-                 material.subsurfaceScatterAnisotropy, 0.0F},
+                 material.subsurfaceScatterAnisotropy,
+                 material.normalTextureScale},
                 {material.subsurfaceColor[0], material.subsurfaceColor[1],
                  material.subsurfaceColor[2], 0.0F},
                 {material.subsurfaceRadius[0], material.subsurfaceRadius[1],
@@ -1742,7 +1749,8 @@ public:
                 {material.specularWeight, material.specularColor[0],
                  material.specularColor[1], material.specularColor[2]},
                 {material.coat, material.coatRoughness,
-                 material.coatIndexOfRefraction, 0.0F},
+                 material.coatIndexOfRefraction,
+                 material.normalTextureFlipY ? 1.0F : 0.0F},
                 {material.coatColor[0], material.coatColor[1],
                  material.coatColor[2], 0.0F},
                 {material.transmissionDepth,

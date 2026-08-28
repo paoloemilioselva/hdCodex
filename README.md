@@ -57,10 +57,13 @@ asset-input and display-output format, not the path-throughput representation.
 
 ### Materials and textures
 
-- Transitional lowering of supported MaterialX OpenPBR and Autodesk Standard
-  Surface inputs into the compute material ABI. USD-native `Usd*` shader
-  networks are diagnosed as unsupported instead of being silently translated
-  into lookalike MaterialX models.
+- MaterialX surface NodeGraphs are expanded by MaterialX and compiled from
+  primitive NodeDefs and generic graph combiners into the compute closure ABI.
+  The renderer contains no OpenPBR or Standard Surface parameter extractor;
+  supported lobes and textures survive unsupported auxiliary decorations.
+  Texture adjustments outside the compact ABI currently retain their source
+  image as a documented approximation; unsupported terminal closures reject.
+  USD-native `Usd*` networks remain explicitly unsupported.
 - Constant or image-driven base color, metalness, roughness, emission, opacity,
   normal, transmission, specular color/weight, coat, and subsurface controls.
 - OpenPBR transmission depth, volume scattering, dispersion, and subsurface
@@ -71,8 +74,8 @@ asset-input and display-output format, not the path-throughput representation.
 - MaterialX Vulkan GLSL generation, runtime glslang compilation to SPIR-V, and a
   deterministic content/configuration cache. Generated raster modules, their
   reflected descriptor ABI, and an expanded MaterialX graph program are kept
-  by Hydra materials while the transitional path tracer evaluates its
-  explicitly supported lowered subset.
+  by Hydra materials alongside the expanded closure program and its compiled
+  path-tracing ABI.
 
 ### Lighting
 

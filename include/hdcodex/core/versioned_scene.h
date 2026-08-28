@@ -93,14 +93,14 @@ struct SceneMaterial {
     std::vector<std::uint32_t> materialXPixelSpirv;
     std::vector<GeneratedDescriptor> materialXVertexDescriptors;
     std::vector<GeneratedDescriptor> materialXPixelDescriptors;
-    /// Reflected inputs preserve the generated program ABI for raster preview
-    /// and future generated closure linking.  They are deliberately separate
-    /// from the temporary hand-lowered fields below.
+    /// Reflected inputs preserve the generated raster-program ABI. They are
+    /// deliberately separate from the compact path-closure ABI below.
     std::vector<GeneratedInput> materialXPublicUniforms;
     std::vector<GeneratedTexture> materialXTextures;
     /// Dependency-ordered graph produced by expanding MaterialX NodeGraph
-    /// implementations. The path tracer does not execute this program yet;
-    /// it is the source IR for the closure ABI replacing the fields below.
+    /// implementations. The MaterialX closure compiler executes this source
+    /// IR into the compact renderer closure ABI below. The transport kernel
+    /// never inspects the authored high-level surface-model identifier.
     std::string materialXOutputNode;
     std::vector<GeneratedNode> materialXProgram;
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
@@ -129,6 +129,11 @@ struct SceneMaterial {
     float subsurfaceScale{1.0F};
     float subsurfaceScatterAnisotropy{0.0F};
     bool thinWalled{false};
+    /// MaterialX normal graphs may explicitly invert the green tangent-space
+    /// channel (DirectX convention). This is derived from the expanded value
+    /// graph, not from a high-level shader-model input.
+    bool normalTextureFlipY{false};
+    float normalTextureScale{1.0F};
     std::string baseColorTexture;
     std::string metalnessTexture;
     std::string roughnessTexture;

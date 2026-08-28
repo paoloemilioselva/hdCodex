@@ -3,27 +3,16 @@
 #include "render_param.h"
 #include "texture_loader.h"
 
+#include "pxr/base/tf/diagnostic.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/tokens.h"
-#include "pxr/base/tf/diagnostic.h"
-#include "pxr/base/gf/vec3d.h"
-#include "pxr/base/gf/vec3f.h"
-#include "pxr/base/gf/vec4f.h"
-#include "pxr/base/gf/half.h"
-#include "pxr/imaging/hio/image.h"
-#include "pxr/imaging/hio/types.h"
-#include "pxr/usd/sdf/assetPath.h"
 
 #if defined(HDCODEX_HAS_MATERIALX)
 #include "pxr/imaging/hdMtlx/hdMtlx.h"
 #endif
 
 #include <algorithm>
-#include <array>
-#include <optional>
-#include <cmath>
-#include <cstring>
-#include <set>
+#include <map>
 #include <stdexcept>
 #include <string_view>
 
@@ -69,109 +58,15 @@ bool IsUsdNativeShaderNetwork(const VtValue& resource)
     });
 }
 
-float FloatParameter(const HdMaterialNode2& node, const char* name, float fallback)
-{
-    const auto found = node.parameters.find(TfToken(name));
-    if (found == node.parameters.end()) return fallback;
-    const VtValue& value = found->second;
-    if (value.IsHolding<float>()) return value.UncheckedGet<float>();
-    if (value.IsHolding<double>()) return static_cast<float>(value.UncheckedGet<double>());
-    if (value.IsHolding<GfVec3f>()) return value.UncheckedGet<GfVec3f>()[0];
-    if (value.IsHolding<GfVec3d>()) {
-        return static_cast<float>(value.UncheckedGet<GfVec3d>()[0]);
-    }
-    return fallback;
-}
-
-bool BoolParameter(const HdMaterialNode2& node, const char* name, bool fallback)
-{
-    const auto found = node.parameters.find(TfToken(name));
-    if (found == node.parameters.end()) return fallback;
-    const VtValue& value = found->second;
-    if (value.IsHolding<bool>()) return value.UncheckedGet<bool>();
-    if (value.IsHolding<int>()) return value.UncheckedGet<int>() != 0;
-    return fallback;
-}
-
-std::array<float, 3> ColorParameter(
-    const HdMaterialNode2& node, const char* name, std::array<float, 3> fallback)
-{
-    const auto found = node.parameters.find(TfToken(name));
-    if (found == node.parameters.end()) return fallback;
-    const VtValue& value = found->second;
-    if (value.IsHolding<GfVec3f>()) {
-        const auto color = value.UncheckedGet<GfVec3f>();
-        return {color[0], color[1], color[2]};
-    }
-    if (value.IsHolding<GfVec3d>()) {
-        const auto color = value.UncheckedGet<GfVec3d>();
-        return {static_cast<float>(color[0]), static_cast<float>(color[1]),
-                static_cast<float>(color[2])};
-    }
-    if (value.IsHolding<GfVec4f>()) {
-        const auto color = value.UncheckedGet<GfVec4f>();
-        return {color[0], color[1], color[2]};
-    }
-    return fallback;
-}
-
-std::optional<std::string> FileParameter(const HdMaterialNode2& node)
-{
-    const auto found = node.parameters.find(TfToken("file"));
-    if (found == node.parameters.end()) return std::nullopt;
-    const VtValue& value = found->second;
-    if (value.IsHolding<SdfAssetPath>()) {
-        const SdfAssetPath& asset = value.UncheckedGet<SdfAssetPath>();
-        return asset.GetResolvedPath().empty() ? asset.GetAssetPath() : asset.GetResolvedPath();
-    }
-    if (value.IsHolding<std::string>()) return value.UncheckedGet<std::string>();
-    if (value.IsHolding<TfToken>()) return value.UncheckedGet<TfToken>().GetString();
-    return std::nullopt;
-}
-
-std::optional<std::string> FindTextureRecursive(
-    const HdMaterialNetwork2& network,
-    const SdfPath& nodePath,
-    std::set<SdfPath>& visited)
-{
-    if (!visited.insert(nodePath).second) return std::nullopt;
-    const auto found = network.nodes.find(nodePath);
-    if (found == network.nodes.end()) return std::nullopt;
-    const HdMaterialNode2& node = found->second;
-    if (node.nodeTypeId.GetString().find("image") != std::string::npos) {
-        if (const auto file = FileParameter(node); file && !file->empty()) return file;
-    }
-    for (const auto& [inputName, connections] : node.inputConnections) {
-        (void)inputName;
-        for (const HdMaterialConnection2& connection : connections) {
-            if (const auto path = FindTextureRecursive(
-                    network, connection.upstreamNode, visited)) return path;
-        }
-    }
-    return std::nullopt;
-}
-
-std::optional<std::string> TextureForInput(
-    const HdMaterialNetwork2& network,
-    const HdMaterialNode2& surface,
-    const char* inputName)
-{
-    const auto found = surface.inputConnections.find(TfToken(inputName));
-    if (found == surface.inputConnections.end()) return std::nullopt;
-    for (const HdMaterialConnection2& connection : found->second) {
-        std::set<SdfPath> visited;
-        if (const auto path = FindTextureRecursive(
-                network, connection.upstreamNode, visited)) return path;
-    }
-    return std::nullopt;
-}
-
 std::string LoadTexture(
     hdcodex::VersionedScene* scene,
-    const std::optional<std::string>& path,
-    bool srgb)
+    std::string_view path,
+    std::string_view colorSpace)
 {
-    return hdcodex::LoadSceneTexture(scene, path,
+    const bool srgb = colorSpace == "srgb_texture" ||
+        colorSpace == "srgb_rec709_scene";
+    return hdcodex::LoadSceneTexture(
+        scene, std::string(path),
         srgb ? hdcodex::TextureColorSpace::Srgb
              : hdcodex::TextureColorSpace::Raw,
         false);
@@ -230,23 +125,46 @@ void AttachGeneratedProgram(
             .value = input.value,
         });
     }
+
+    std::map<std::string, std::string, std::less<>> closureTextures;
     for (const hdcodex::MaterialXShaderInput& texture : compiled.textures) {
         // Lighting resources are renderer-owned private uniforms, not material
-        // graph images.  They are bound by the raster backend.
+        // graph images. They are bound by the raster backend.
         if (texture.value.empty() || texture.value == "$envRadiance" ||
             texture.value == "$envIrradiance") {
             continue;
         }
-        const bool srgb = texture.colorSpace == "srgb_texture" ||
-            texture.colorSpace == "srgb_rec709_scene";
-        const std::string textureId = LoadTexture(scene, texture.value, srgb);
+        const std::string textureId = LoadTexture(
+            scene, texture.value, texture.colorSpace);
         if (textureId.empty()) continue;
+        closureTextures.try_emplace(texture.value, textureId);
         material.materialXTextures.push_back({
             .uniformName = texture.name,
             .textureId = textureId,
             .colorSpace = texture.colorSpace,
         });
     }
+    const auto resolveClosureTexture = [&closureTextures](std::string& source) {
+        if (source.empty()) return;
+        const auto found = closureTextures.find(source);
+        if (found == closureTextures.end()) {
+            throw std::runtime_error(
+                "generated MaterialX closure texture was not reflected: " + source);
+        }
+        source = found->second;
+    };
+    for (std::string* texture : {
+             &material.baseColorTexture, &material.metalnessTexture,
+             &material.roughnessTexture, &material.emissionTexture,
+             &material.opacityTexture, &material.normalTexture,
+             &material.transmissionTexture, &material.specularTexture,
+             &material.specularColorTexture, &material.coatTexture,
+             &material.coatColorTexture, &material.coatRoughnessTexture,
+             &material.subsurfaceTexture, &material.subsurfaceColorTexture,
+             &material.subsurfaceRadiusTexture}) {
+        resolveClosureTexture(*texture);
+    }
+
     material.materialXOutputNode = compiled.program.outputNode;
     material.materialXProgram.reserve(compiled.program.nodes.size());
     for (const hdcodex::MaterialXProgramNode& sourceNode : compiled.program.nodes) {
@@ -268,203 +186,6 @@ void AttachGeneratedProgram(
         }
         material.materialXProgram.push_back(std::move(node));
     }
-}
-
-std::optional<hdcodex::SceneMaterial> ExtractSceneMaterial(
-    const VtValue& resource,
-    const SdfPath& materialPath,
-    hdcodex::VersionedScene* scene)
-{
-    hdcodex::SceneMaterial material;
-    material.id = materialPath.GetString();
-    const HdMaterialNetwork2 network = ToNetwork2(resource);
-    const HdMaterialNode2* surface = nullptr;
-    if (const auto terminal = network.terminals.find(HdMaterialTerminalTokens->surface);
-        terminal != network.terminals.end()) {
-        if (const auto node = network.nodes.find(terminal->second.upstreamNode);
-            node != network.nodes.end()) surface = &node->second;
-    }
-    if (!surface) {
-        for (const auto& [path, node] : network.nodes) {
-            (void)path;
-            const std::string type = node.nodeTypeId.GetString();
-            if (type.find("standard_surface") != std::string::npos ||
-                type.find("open_pbr_surface") != std::string::npos) {
-                surface = &node;
-                break;
-            }
-        }
-    }
-    if (!surface) return std::nullopt;
-
-    const HdMaterialNode2& node = *surface;
-    const std::string type = node.nodeTypeId.GetString();
-    material.shaderNodeId = type;
-    if (type.find("open_pbr_surface") != std::string::npos) {
-        material.baseColor = ColorParameter(node, "base_color", material.baseColor);
-        material.metalness = FloatParameter(node, "base_metalness", material.metalness);
-        material.roughness = FloatParameter(
-            node, "specular_roughness", material.roughness);
-        material.emissionWeight = FloatParameter(node, "emission_luminance", 0.0F);
-        material.emission = ColorParameter(node, "emission_color", material.emission);
-        for (float& component : material.emission) component *= material.emissionWeight;
-        material.opacity = FloatParameter(node, "geometry_opacity", material.opacity);
-        material.transmission = FloatParameter(
-            node, "transmission_weight", material.transmission);
-        material.transmissionColor = ColorParameter(
-            node, "transmission_color", material.transmissionColor);
-        material.transmissionDepth = FloatParameter(
-            node, "transmission_depth", material.transmissionDepth);
-        material.transmissionScatter = ColorParameter(
-            node, "transmission_scatter", material.transmissionScatter);
-        material.transmissionScatterAnisotropy = FloatParameter(
-            node, "transmission_scatter_anisotropy",
-            material.transmissionScatterAnisotropy);
-        material.transmissionDispersionScale = FloatParameter(
-            node, "transmission_dispersion_scale",
-            material.transmissionDispersionScale);
-        material.transmissionDispersionAbbeNumber = FloatParameter(
-            node, "transmission_dispersion_abbe_number",
-            material.transmissionDispersionAbbeNumber);
-        material.indexOfRefraction = FloatParameter(
-            node, "specular_ior", material.indexOfRefraction);
-        material.specularWeight = FloatParameter(
-            node, "specular_weight", material.specularWeight);
-        material.specularColor = ColorParameter(
-            node, "specular_color", material.specularColor);
-        material.coat = FloatParameter(node, "coat_weight", material.coat);
-        material.coatColor = ColorParameter(node, "coat_color", material.coatColor);
-        material.coatRoughness = FloatParameter(
-            node, "coat_roughness", material.coatRoughness);
-        material.coatIndexOfRefraction = FloatParameter(
-            node, "coat_ior", material.coatIndexOfRefraction);
-        material.thinWalled = BoolParameter(
-            node, "geometry_thin_walled", material.thinWalled);
-        material.subsurface = FloatParameter(
-            node, "subsurface_weight", material.subsurface);
-        material.subsurfaceColor = ColorParameter(
-            node, "subsurface_color", material.subsurfaceColor);
-        const float subsurfaceRadius = FloatParameter(node, "subsurface_radius", 1.0F);
-        material.subsurfaceRadius = ColorParameter(
-            node, "subsurface_radius_scale", material.subsurfaceRadius);
-        for (float& component : material.subsurfaceRadius) {
-            component *= subsurfaceRadius;
-        }
-        material.subsurfaceScale = 1.0F;
-        material.subsurfaceScatterAnisotropy = FloatParameter(
-            node, "subsurface_scatter_anisotropy",
-            material.subsurfaceScatterAnisotropy);
-        material.baseColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "base_color"), true);
-        material.metalnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "base_metalness"), false);
-        material.roughnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular_roughness"), false);
-        material.emissionTexture = LoadTexture(
-            scene, TextureForInput(network, node, "emission_color"), true);
-        material.opacityTexture = LoadTexture(
-            scene, TextureForInput(network, node, "geometry_opacity"), false);
-        material.normalTexture = LoadTexture(
-            scene, TextureForInput(network, node, "geometry_normal"), false);
-        material.transmissionTexture = LoadTexture(
-            scene, TextureForInput(network, node, "transmission_color"), true);
-        material.specularTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular_weight"), false);
-        material.specularColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular_color"), true);
-        material.coatTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat_weight"), false);
-        material.coatColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat_color"), true);
-        material.coatRoughnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat_roughness"), false);
-        material.subsurfaceTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface_weight"), false);
-        material.subsurfaceColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface_color"), true);
-        material.subsurfaceRadiusTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface_radius_scale"), false);
-        return material;
-    }
-    if (type.find("standard_surface") != std::string::npos) {
-        material.baseColor = ColorParameter(node, "base_color", material.baseColor);
-        material.metalness = FloatParameter(node, "metalness", material.metalness);
-        material.roughness = FloatParameter(node, "specular_roughness", material.roughness);
-        material.emissionWeight = FloatParameter(node, "emission", 0.0F);
-        material.emission = ColorParameter(node, "emission_color", material.emission);
-        for (float& component : material.emission) component *= material.emissionWeight;
-        material.opacity = FloatParameter(node, "opacity", material.opacity);
-        material.transmission = FloatParameter(node, "transmission", material.transmission);
-        material.transmissionColor = ColorParameter(
-            node, "transmission_color", material.transmissionColor);
-        material.transmissionDepth = FloatParameter(
-            node, "transmission_depth", material.transmissionDepth);
-        material.transmissionScatter = ColorParameter(
-            node, "transmission_scatter", material.transmissionScatter);
-        material.transmissionScatterAnisotropy = FloatParameter(
-            node, "transmission_scatter_anisotropy",
-            material.transmissionScatterAnisotropy);
-        const float standardDispersion = FloatParameter(
-            node, "transmission_dispersion", 0.0F);
-        if (standardDispersion > 0.0F) {
-            material.transmissionDispersionScale = 1.0F;
-            material.transmissionDispersionAbbeNumber = standardDispersion;
-        }
-        material.indexOfRefraction = FloatParameter(
-            node, "specular_IOR", material.indexOfRefraction);
-        material.specularWeight = FloatParameter(
-            node, "specular", material.specularWeight);
-        material.specularColor = ColorParameter(
-            node, "specular_color", material.specularColor);
-        material.coat = FloatParameter(node, "coat", material.coat);
-        material.coatColor = ColorParameter(node, "coat_color", material.coatColor);
-        material.coatRoughness = FloatParameter(
-            node, "coat_roughness", material.coatRoughness);
-        material.coatIndexOfRefraction = FloatParameter(
-            node, "coat_IOR", material.coatIndexOfRefraction);
-        material.thinWalled = BoolParameter(node, "thin_walled", material.thinWalled);
-        material.subsurface = FloatParameter(node, "subsurface", material.subsurface);
-        material.subsurfaceColor = ColorParameter(
-            node, "subsurface_color", material.subsurfaceColor);
-        material.subsurfaceRadius = ColorParameter(
-            node, "subsurface_radius", material.subsurfaceRadius);
-        material.subsurfaceScale = FloatParameter(
-            node, "subsurface_scale", material.subsurfaceScale);
-        material.subsurfaceScatterAnisotropy = FloatParameter(
-            node, "subsurface_anisotropy", material.subsurfaceScatterAnisotropy);
-        material.baseColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "base_color"), true);
-        material.metalnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "metalness"), false);
-        material.roughnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular_roughness"), false);
-        material.emissionTexture = LoadTexture(
-            scene, TextureForInput(network, node, "emission_color"), true);
-        material.opacityTexture = LoadTexture(
-            scene, TextureForInput(network, node, "opacity"), false);
-        material.normalTexture = LoadTexture(
-            scene, TextureForInput(network, node, "normal"), false);
-        material.transmissionTexture = LoadTexture(
-            scene, TextureForInput(network, node, "transmission_color"), true);
-        material.specularTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular"), false);
-        material.specularColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "specular_color"), true);
-        material.coatTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat"), false);
-        material.coatColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat_color"), true);
-        material.coatRoughnessTexture = LoadTexture(
-            scene, TextureForInput(network, node, "coat_roughness"), false);
-        material.subsurfaceTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface"), false);
-        material.subsurfaceColorTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface_color"), true);
-        material.subsurfaceRadiusTexture = LoadTexture(
-            scene, TextureForInput(network, node, "subsurface_radius"), false);
-        return material;
-    }
-    return std::nullopt;
 }
 
 std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
@@ -497,8 +218,16 @@ std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
         HdMtlxStdLibraries());
     if (!document) return {};
 
+    hdcodex::MaterialXCompiledShader compiled = compiler->CompileDocument(
+        document, materialPath.GetName(), mode);
+    if (compiled.closure) {
+        compiled.closure->id = materialPath.GetString();
+        // Provenance is retained for diagnostics only. Closure behavior has
+        // already been compiled solely from the expanded MaterialX program.
+        compiled.closure->shaderNodeId = node->second.nodeTypeId.GetString();
+    }
     return std::make_shared<const hdcodex::MaterialXCompiledShader>(
-        compiler->CompileDocument(document, materialPath.GetName(), mode));
+        std::move(compiled));
 }
 
 } // namespace
@@ -525,30 +254,26 @@ void HdCodexMaterial::Sync(HdSceneDelegate* sceneDelegate,
                     "use their MaterialX implementations.",
                     GetId().GetText());
             } else {
-                auto extracted = ExtractSceneMaterial(
-                    resource, GetId(), param->GetScene());
                 try {
                     compiled = CompileMaterialX(
                         resource, GetId(), param->GetMaterialCompiler(),
                         param->GetShadingMode());
+                    if (!compiled || !compiled->closure) {
+                        param->GetScene()->RemoveMaterial(GetId().GetString());
+                        TF_WARN(
+                            "hdCodex MaterialX material %s has no generated "
+                            "path-tracing closure program.",
+                            GetId().GetText());
+                    } else {
+                        hdcodex::SceneMaterial material = *compiled->closure;
+                        AttachGeneratedProgram(
+                            material, *compiled, param->GetScene());
+                        param->GetScene()->UpsertMaterial(std::move(material));
+                    }
                 } catch (const std::exception& error) {
+                    param->GetScene()->RemoveMaterial(GetId().GetString());
                     TF_WARN("hdCodex could not compile MaterialX material %s: %s",
                             GetId().GetText(), error.what());
-                }
-                if (!compiled) {
-                    param->GetScene()->RemoveMaterial(GetId().GetString());
-                } else if (!extracted) {
-                    param->GetScene()->RemoveMaterial(GetId().GetString());
-                    TF_WARN(
-                        "hdCodex generated MaterialX raster code for material %s, "
-                        "but its path-tracing closure runtime is not implemented; "
-                        "the material is unsupported rather than silently "
-                        "approximated.",
-                        GetId().GetText());
-                } else {
-                    AttachGeneratedProgram(
-                        *extracted, *compiled, param->GetScene());
-                    param->GetScene()->UpsertMaterial(std::move(*extracted));
                 }
             }
         }

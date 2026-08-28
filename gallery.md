@@ -21,7 +21,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera PhysCamera001 gallery\intel_sponza.usda gallery\intel_sponza.jpg
 ```
-**Render Time:** 13.22 seconds
+**Render Time:** 12.10 seconds
 
 ![Intel Sponza Base Scene](gallery/intel_sponza.jpg)
 
@@ -32,7 +32,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda gallery\chess_board.jpg
 ```
-**Render Time:** 15.06 seconds
+**Render Time:** 13.18 seconds
 
 ![OpenChessSet](gallery/chess_board.jpg)
 
@@ -43,7 +43,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_bubblegum.usda gallery\shader_ball_bubblegum.jpg
 ```
-**Render Time:** 6.86 seconds
+**Render Time:** 5.19 seconds
 
 ![StandardShaderBall BubbleGum](gallery/shader_ball_bubblegum.jpg)
 
@@ -54,7 +54,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_glass.usda gallery\shader_ball_glass.jpg
 ```
-**Render Time:** 6.70 seconds
+**Render Time:** 5.14 seconds
 
 ![StandardShaderBall Glass](gallery/shader_ball_glass.jpg)
 
@@ -65,7 +65,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera camera gallery\shader_ball_gold.usda gallery\shader_ball_gold.jpg
 ```
-**Render Time:** 6.62 seconds
+**Render Time:** 5.30 seconds
 
 ![StandardShaderBall Gold](gallery/shader_ball_gold.jpg)
 
@@ -76,7 +76,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --camera renderCam gallery\pixar_kitchen.usda gallery\pixar_kitchen.jpg
 ```
-**Render Time:** 2.68 seconds
+**Render Time:** 2.65 seconds
 
 ![Pixar's KitchenSet](gallery/pixar_kitchen.jpg)
 
@@ -87,7 +87,7 @@ provenance diagnostics.
 ```cmd
 .\render_codex.bat --imageWidth 512 --purposes render --camera mono gallery\collectiveproject001.usda gallery\collectiveproject001.jpg
 ```
-**Render Time:** 5.32 seconds
+**Render Time:** 5.09 seconds
 
 ![Collective Project 001](gallery/collectiveproject001.jpg)
 
@@ -102,6 +102,6 @@ intentionally diagnosed and omitted.
 ```cmd
 .\render_codex.bat --imageWidth 512 --purposes render --camera renderCam_mainCU gallery\openpbr_playground.usda gallery\openpbr_playground.jpg
 ```
-**Render Time:** 5.32 seconds
+**Render Time:** 36.67 seconds
 
 ![OpenPBR Playground](gallery/openpbr_playground.jpg)

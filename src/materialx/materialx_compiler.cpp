@@ -10,9 +10,11 @@
 #include <MaterialXGenShader/Shader.h>
 #include <MaterialXGenShader/Util.h>
 
+#include <cstdlib>
+#include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
-#include <set>
 
 namespace hdcodex {
 namespace {
@@ -50,16 +52,16 @@ void FlattenMaterialXUsdPrimvarReaders(const MaterialX::DocumentPtr& document)
     }
 }
 
-bool IsMaterialXSurfaceModelOrUsdPrimvarReader(const MaterialX::NodePtr& node)
+bool IsGraphImplementedSurfaceModelOrUsdPrimvarReader(
+    const MaterialX::NodePtr& node)
 {
     if (!node) return false;
     const MaterialX::NodeDefPtr nodeDef = node->getNodeDef();
     if (!nodeDef) return false;
-    const std::string& name = nodeDef->getName();
-    return name == "ND_open_pbr_surface_surfaceshader" ||
-        name == "ND_standard_surface_surfaceshader" ||
-        name.starts_with("ND_UsdPreviewSurface_") ||
-        name.starts_with("ND_UsdPrimvarReader_");
+    if (nodeDef->getName().starts_with("ND_UsdPrimvarReader_")) return true;
+    if (node->getType() != MaterialX::SURFACE_SHADER_TYPE_STRING) return false;
+    const MaterialX::InterfaceElementPtr implementation = node->getImplementation();
+    return implementation && implementation->asA<MaterialX::NodeGraph>();
 }
 
 void FlattenMaterialXSurfaceModels(const MaterialX::DocumentPtr& document)
@@ -70,7 +72,7 @@ void FlattenMaterialXSurfaceModels(const MaterialX::DocumentPtr& document)
     // entire standard library would create a needlessly large intermediate.
     const MaterialX::NodePredicate predicate =
         [](const MaterialX::NodePtr& node) {
-            return IsMaterialXSurfaceModelOrUsdPrimvarReader(node);
+            return IsGraphImplementedSurfaceModelOrUsdPrimvarReader(node);
         };
     for (const MaterialX::NodeGraphPtr& graph : document->getNodeGraphs()) {
         graph->flattenSubgraphs(MaterialX::EMPTY_STRING, predicate);
@@ -158,6 +160,31 @@ MaterialXGeneratedProgram BuildGeneratedProgram(
     std::set<std::string, std::less<>> visited;
     AppendProgramNode(outputNode, program, visited);
     return program;
+}
+
+void DumpGeneratedProgram(
+    const MaterialXGeneratedProgram& program, std::string_view shaderName)
+{
+    const char* enabled = std::getenv("HDCODEX_DUMP_MATERIALX_PROGRAM");
+    const char* filter = std::getenv("HDCODEX_DUMP_MATERIALX_FILTER");
+    if (enabled == nullptr ||
+        (filter != nullptr && shaderName.find(filter) == std::string_view::npos)) return;
+    std::cerr << "--- MATERIALX PROGRAM " << shaderName << " -> "
+              << program.outputNode << " ---\n";
+    for (const MaterialXProgramNode& node : program.nodes) {
+        std::cerr << node.name << " category=" << node.category
+                  << " nodedef=" << node.nodeDef << " type=" << node.type << '\n';
+        for (const MaterialXProgramInput& input : node.inputs) {
+            std::cerr << "  " << input.name << ':' << input.type;
+            if (!input.upstreamNode.empty()) {
+                std::cerr << " <- " << input.upstreamNode;
+                if (!input.upstreamOutput.empty()) std::cerr << '.' << input.upstreamOutput;
+            } else {
+                std::cerr << " = " << input.value;
+            }
+            std::cerr << '\n';
+        }
+    }
 }
 
 void ReplaceAll(std::string& source, std::string_view needle, std::string_view replacement)
@@ -316,6 +343,8 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     if (mode != ShadingMode::RasterPreview) {
         result.program = BuildGeneratedProgram(
             generationDocument, renderables.front());
+        DumpGeneratedProgram(result.program, shaderName);
+        result.closure = CompileMaterialXClosure(result.program);
     }
     FlattenVulkanVertexData(*shader, result.vertexSource, result.pixelSource);
     if (result.vertexSource.empty() || result.pixelSource.empty()) {

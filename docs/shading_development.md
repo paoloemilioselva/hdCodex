@@ -57,10 +57,12 @@ Every supported MaterialX material, including OpenPBR, Standard Surface, and a
 genuinely MaterialX-authored USD Preview Surface, must execute code generated
 from its MaterialX graph and selected target implementations.
 
-The existing hand-lowered `SceneMaterial` representation and monolithic compute
-implementations of OpenPBR, Standard Surface, and Preview Surface are temporary
-architecture. They are not a conforming final path even where their output is
-visually close.
+The former hand-lowered OpenPBR and Standard Surface parameter extractor was
+removed on 2026-08-28. `SceneMaterial` is now populated only by compiling the
+expanded MaterialX program from primitive NodeDefs and generic graph combiners.
+The compact closure ABI and its monolithic primitive implementations remain a
+transitional target until generated `eval`, `sample`, and `pdf` entry points
+replace them.
 
 Renderer-specific implementations are still required for primitive closure
 operations because the MaterialX surface and volume result representation is
@@ -97,18 +99,20 @@ the surface to `ND_open_pbr_surface_surfaceshader`. Its upstream graphs also use
 MaterialX image, geomprop, extraction, inversion, combination, color-correction,
 and normal-map nodes.
 
-hdCodex currently asks MaterialX 1.39.3 to generate Vulkan vertex and fragment
-stages for these graphs and compiles the results to SPIR-V. Those modules are
-stored on the Hydra material but are not consumed by the Vulkan path tracer.
-The rendered gallery image instead uses a second path that extracts selected
-surface parameters and underlying image filenames into `SceneMaterial`, then
-evaluates a hand-written compute BSDF. Traversing upstream until an image is
-found also discards intervening MaterialX operations such as channel extraction,
-green-channel inversion, color correction, and normal-map conversion.
+hdCodex asks MaterialX 1.39.3 to generate Vulkan vertex and fragment stages and
+also expands the surface NodeGraph into a dependency-ordered closure program.
+The path backend compiles the supported subset of that program into its compact
+closure ABI. It no longer traverses the Hydra network to find a high-level
+parameter or first reachable filename. Channel operations, color correction,
+anisotropy, sheen, and other operations are interpreted from that expanded
+program. Common normal-channel reconstruction is retained exactly. Operations
+outside the compact ABI preserve an independently supported base closure and,
+for texture adjustments, currently retain the source image; unsupported
+terminal closures still reject.
 
-Consequently, the scene is a valid MaterialX/OpenPBR test asset, but the current
-render is not evidence that the MaterialX OpenPBR BxDF implementation was
-executed.
+Consequently, the scene is a valid MaterialX/OpenPBR coverage test: materials
+are driven by expanded MaterialX semantics without a high-level OpenPBR field
+extractor, while compact-ABI approximations remain explicit implementation debt.
 
 One authored material is invalid independently of hdCodex: `OJfoam.mtlx`
 connects the `color3` output of `mtlxcolorcorrect2` directly to the `float`
@@ -194,10 +198,10 @@ generated architecture.
 
 | Area | Current status |
 | --- | --- |
-| MaterialX graph generation | Vulkan raster stages generated and compiled, but not executed by the path tracer |
-| Arbitrary value/procedural graphs | Not executed; selected inputs are reduced to constants or the first reachable image |
-| OpenPBR and Standard Surface | Partial hand-written approximations |
-| USD Preview Surface | Partial hand-written approximation; conflicts with SD-001 and must become an explicit unsupported diagnostic |
+| MaterialX graph generation | Raster stages plus an expanded closure program are generated; the supported program subset compiles into the path ABI |
+| Arbitrary value/procedural graphs | Supported constants, direct images, channel-reconstructed normals, identity folds, and arithmetic execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
+| OpenPBR and Standard Surface | High-level NodeGraphs are expanded generically; supported primitive closure subsets compile without shader-name special cases |
+| USD Preview Surface | USD-native networks are rejected; genuinely MaterialX-authored variants follow normal NodeGraph expansion and closure capability checks |
 | Dielectric reflection | Partial IOR, Schlick Fresnel, and GGX reflection |
 | Dielectric transmission | Refraction, total internal reflection, thin-wall pass-through, absorption, and homogeneous scattering; no rough microfacet BTDF |
 | Conductors | Metallic base color used as F0; no complete conductor/complex-IOR semantics |
@@ -254,17 +258,17 @@ The renderer also needs:
 
 ## Implementation status
 
-Status as of 2026-08-27:
+Status as of 2026-08-28:
 
 | Component | Status | Acceptance gate |
 | --- | --- | --- |
 | Shader provenance | Implemented | USD-native `Usd*` networks are rejected before MaterialX conversion with an actionable diagnostic |
 | Mode selection | Foundation implemented | `fused`, `modular`, and `raster` are parsed as renderer settings; fused is the default |
-| Fused compute pipeline | Transitional | Has a distinct optimized cache identity, but still executes the old lowered material and is not MaterialX-conformant |
-| Modular compute pipeline | Transitional | Has an unoptimized, debug-preserving cache identity, but does not yet dispatch generated closure programs |
+| Fused compute pipeline | Transitional | Executes a compact ABI compiled solely from the expanded MaterialX program; generated `eval/sample/pdf` entry points remain pending |
+| Modular compute pipeline | Transitional | Has an unoptimized, debug-preserving cache identity but currently shares the same compiled compact closure ABI |
 | Raster preview | Program generation implemented; draw backend pending | Generated vertex/fragment SPIR-V, reflected uniforms, and graph textures must be bound by a real graphics pipeline |
 | Generated material interface | Implemented | Generated SPIR-V, all public inputs, exact texture uniforms, color-space provenance, descriptor bindings, and std140 offsets survive into renderer-owned data |
-| Path closure target | Pending | MaterialX graphs generate an hdCodex closure program exposing emission, opacity, `eval`, `sample`, and `pdf` |
+| Path closure target | Foundation implemented | Expanded programs compile to the supported compact closure ABI; unsupported terminals reject while unsupported decorations preserve supported lobes; callable emission, opacity, `eval`, `sample`, and `pdf` generation remains pending |
 
 The three setting values exist now so cache keys, scene data, tests, and the
 Hydra contract do not need another incompatible transition. They must not be
@@ -276,7 +280,7 @@ graphics backend is not complete rather than falling back to compute.
 
 ### Phase 0: provenance and generated-program plumbing
 
-Status: in progress; most prerequisites implemented.
+Status: complete for the current Vulkan/MaterialX 1.39.3 foundation.
 
 - Reject USD-native shader networks before MaterialX document creation.
 - Preserve the authored terminal NodeDef identifier.
@@ -290,6 +294,10 @@ Exit gate: Sponza reports its USD Preview Surface networks as unsupported;
 OpenPBR Playground reaches generation with complete graph resources.
 
 ### Phase 1: hdCodex MaterialX closure target
+
+Status: in progress. The expanded graph now compiles to a compact
+closure ABI without high-level shader-name cases. Generated callable
+`eval`/`sample`/`pdf` entry points and broader primitive coverage remain.
 
 - Derive a MaterialX GLSL/Vulkan generator target with a renderer closure ABI.
 - Expand high-level NodeGraph implementations, including OpenPBR and Standard

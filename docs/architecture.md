@@ -137,10 +137,13 @@ The default pipeline is:
 3. Compile the generated raster stages to SPIR-V with glslang and cache them
    under a SHA-256 key containing source, generator/compiler versions, target,
    and ABI.
-4. For currently supported MaterialX OpenPBR and Standard Surface graphs,
-   temporarily lower selected parameters and connected image nodes into the
-   path tracer's compute material ABI. USD-native `Usd*` networks are rejected
-   rather than translated into MaterialX lookalikes.
+4. Expand every graph-implemented MaterialX surface model through its authored
+   NodeGraph, then compile supported primitive BSDF/EDF/VDF nodes, value
+   operations, and closure combiners into the path tracer's compact compute
+   closure ABI. Unsupported terminal closure semantics reject the material;
+   unsupported auxiliary normal, volume, emission, and energy-compensation
+   decorations preserve the independently supported base closure. USD-native
+   `Usd*` networks are rejected rather than translated into MaterialX lookalikes.
 5. Decode referenced images through Hio and upload them to descriptor-indexed
    Vulkan images with sRGB/raw formats selected per input role.
 
@@ -156,15 +159,15 @@ vertex inputs such as `i_geomprop_st` from colliding with same-named stage
 outputs. It can be deleted when the standalone OpenUSD distribution moves to a
 MaterialX version with the corrected generator.
 
-The transitional GPU BSDF binding supports constant and image-driven MaterialX
-OpenPBR and `standard_surface` base color, metalness, specular
+The current generated-closure GPU binding supports constant and directly
+image-driven MaterialX base color, metalness, specular
 roughness, emission, opacity, tangent-space normals, transmission, dielectric
 specular, and coat. Indexed and face-varying UVs are triangulated in face-corner
 order. Images are normalized to RGBA8, uploaded as sRGB or raw Vulkan images,
 and accessed through a partially-bound descriptor array currently capped at
-256 textures. UDIM tiles are decoded to at most 1024 pixels on their longest
-edge to bound CPU and GPU residency for texture-heavy scenes; ordinary material
-images retain their authored resolution. UDIM sets use separate tile descriptors
+256 textures. Material images and UDIM tiles are decoded to at most 512 pixels
+on their longest edge to bound CPU and GPU residency for texture-heavy scenes;
+HDR lighting textures retain their authored dimensions. UDIM sets use separate tile descriptors
 selected from the integer UV tile, avoiding large sparse atlases; the current
 compact handle covers tiles 1001 through 1023.
 Opacity participates in primary and shadow ray-query candidate confirmation.
@@ -185,10 +188,15 @@ unsupported material continues through the normal material fallback path.
 
 Hydra materials retain the complete generated MaterialX raster-stage modules.
 Vulkan does not make a fragment-stage function directly callable from a compute
-shader, so hdCodex separately lowers the supported graph subset into its compute
-ABI. Arbitrary procedural nodes, texture transforms, sheen, an unbounded
+shader, so hdCodex compiles the expanded, dependency-ordered MaterialX program
+into its compute closure ABI. This compiler recognizes primitive NodeDefs and
+generic combiners only; it never recognizes a high-level surface-model name.
+Arbitrary procedural nodes, exact texture transforms, sheen, an unbounded
 multi-scatter BSSRDF, and a general MaterialX-to-path-tracer callable ABI are
-not implemented.
+not implemented. Common channel-reconstructed normal maps retain their
+MaterialX-authored green-channel inversion. Other texture adjustments that do
+not fit the compact one-image-per-parameter ABI currently preserve the source
+image while the supported closure remains active.
 
 ## Subdivision surfaces
 
