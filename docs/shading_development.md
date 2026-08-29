@@ -200,7 +200,7 @@ generated architecture.
 | Area | Current status |
 | --- | --- |
 | MaterialX graph generation | Raster stages plus an expanded closure program are generated; the supported program subset compiles into the path ABI |
-| Arbitrary value/procedural graphs | Graph-backed helpers are recursively expanded; supported constants, direct images, channel-reconstructed normals, conditionals, luminance, clamp, combine, and arithmetic execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
+| Arbitrary value/procedural graphs | Graph-backed helpers are recursively expanded; supported constants, direct images, channel-reconstructed normals, conditionals, luminance, clamp, combine, scalar arithmetic/trigonometry, and constant vector dot/cross/magnitude/normalize operations execute from the graph; some texture adjustments retain their source image and unsupported terminal closures reject |
 | OpenPBR and Standard Surface | High-level NodeGraphs are expanded generically; supported primitive closure subsets compile without shader-name special cases |
 | USD Preview Surface | USD-native networks are rejected; genuinely MaterialX-authored variants follow normal NodeGraph expansion and closure capability checks |
 | Diffuse reflection | Lambert, qualitative and energy-preserving Oren-Nayar, and Burley primitives with constant or texture-driven weight/roughness; cosine-proposal indirect sampling |

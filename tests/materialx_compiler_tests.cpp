@@ -284,6 +284,85 @@ try {
               std::abs(combinedEdf.emissionWeight - 1.0F) < 1e-5F,
           "MaterialX EDF mix/add/multiply combiners changed emitted radiance");
 
+    const hdcodex::MaterialXGeneratedProgram vectorMathProgram{
+        .outputNode = "surface",
+        .nodes = {
+            {.name = "dot", .category = "dotproduct",
+             .nodeDef = "ND_dotproduct_vector3", .type = "float", .inputs = {
+                 {.name = "in1", .type = "vector3", .value = "1,2,3"},
+                 {.name = "in2", .type = "vector3", .value = "4,-1,2"}}},
+            {.name = "modulo", .category = "modulo",
+             .nodeDef = "ND_modulo_float", .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "dot"},
+                 {.name = "in2", .type = "float", .value = "7"}}},
+            {.name = "cross", .category = "crossproduct",
+             .nodeDef = "ND_crossproduct_vector3", .type = "vector3", .inputs = {
+                 {.name = "in1", .type = "vector3", .value = "1,0,0"},
+                 {.name = "in2", .type = "vector3", .value = "0,1,0"}}},
+            {.name = "magnitude", .category = "magnitude",
+             .nodeDef = "ND_magnitude_vector3", .type = "float", .inputs = {
+                 {.name = "in", .type = "vector3", .upstreamNode = "cross"}}},
+            {.name = "normalized", .category = "normalize",
+             .nodeDef = "ND_normalize_vector3", .type = "vector3", .inputs = {
+                 {.name = "in", .type = "vector3", .value = "0,3,4"}}},
+            {.name = "normalized_z", .category = "extract",
+             .nodeDef = "ND_extract_vector3", .type = "float", .inputs = {
+                 {.name = "in", .type = "vector3", .upstreamNode = "normalized"},
+                 {.name = "index", .type = "integer", .value = "2"}}},
+            {.name = "right_angle", .category = "acos",
+             .nodeDef = "ND_acos_float", .type = "float", .inputs = {
+                 {.name = "in", .type = "float", .value = "0"}}},
+            {.name = "sine", .category = "sin",
+             .nodeDef = "ND_sin_float", .type = "float", .inputs = {
+                 {.name = "in", .type = "float", .upstreamNode = "right_angle"}}},
+            {.name = "atan", .category = "atan2",
+             .nodeDef = "ND_atan2_float", .type = "float", .inputs = {
+                 {.name = "iny", .type = "float", .value = "1"},
+                 {.name = "inx", .type = "float", .value = "1"}}},
+            {.name = "atan_unit", .category = "divide",
+             .nodeDef = "ND_divide_float", .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "atan"},
+                 {.name = "in2", .type = "float", .value = "0.78539816339"}}},
+            {.name = "sum1", .category = "add", .nodeDef = "ND_add_float",
+             .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "sine"},
+                 {.name = "in2", .type = "float", .upstreamNode = "normalized_z"}}},
+            {.name = "sum2", .category = "add", .nodeDef = "ND_add_float",
+             .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "sum1"},
+                 {.name = "in2", .type = "float", .upstreamNode = "atan_unit"}}},
+            {.name = "exponential", .category = "exp",
+             .nodeDef = "ND_exp_float", .type = "float", .inputs = {
+                 {.name = "in", .type = "float", .value = "0"}}},
+            {.name = "inverse_root", .category = "inversesqrt",
+             .nodeDef = "ND_inversesqrt_float", .type = "float", .inputs = {
+                 {.name = "in", .type = "float", .value = "4"}}},
+            {.name = "sum3", .category = "add", .nodeDef = "ND_add_float",
+             .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "sum2"},
+                 {.name = "in2", .type = "float", .upstreamNode = "exponential"}}},
+            {.name = "sum4", .category = "add", .nodeDef = "ND_add_float",
+             .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "sum3"},
+                 {.name = "in2", .type = "float", .upstreamNode = "inverse_root"}}},
+            {.name = "color", .category = "combine3",
+             .nodeDef = "ND_combine3_color3", .type = "color3", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "modulo"},
+                 {.name = "in2", .type = "float", .upstreamNode = "magnitude"},
+                 {.name = "in3", .type = "float", .upstreamNode = "sum4"}}},
+            {.name = "emission", .category = "uniform_edf",
+             .nodeDef = "ND_uniform_edf", .type = "EDF", .inputs = {
+                 {.name = "color", .type = "color3", .upstreamNode = "color"}}},
+            {.name = "surface", .category = "surface", .nodeDef = "ND_surface",
+             .type = "surfaceshader", .inputs = {
+                 {.name = "edf", .type = "EDF", .upstreamNode = "emission"}}},
+        }};
+    const auto vectorMath = hdcodex::CompileMaterialXClosure(vectorMathProgram);
+    Check(std::abs(vectorMath.emission[0] - 1.0F) < 1e-5F &&
+              std::abs(vectorMath.emission[1] - 1.0F) < 1e-5F &&
+              std::abs(vectorMath.emission[2] - 4.3F) < 1e-5F,
+          "MaterialX constant vector/scalar math changed graph evaluation");
+
     const hdcodex::MaterialXGeneratedProgram reconstructedNormalProgram{
         .outputNode = "surface",
         .nodes = {

@@ -70,6 +70,8 @@ asset-input and display-output format, not the path-throughput representation.
 - Uniform MaterialX EDFs with constant `mix`, `add`, and scalar/color
   `multiply` combiners, lowered from the expanded graph without surface-model
   special cases.
+- Constant MaterialX scalar/vector arithmetic, trigonometry, normalization,
+  dot, cross, and magnitude operations in upstream value graphs.
 - Constant or image-driven MaterialX rough-diffuse weight and roughness in
   direct and indirect transport.
 - MaterialX anisotropic GGX roughness pairs and layered Conty-Kulla/Zeltner

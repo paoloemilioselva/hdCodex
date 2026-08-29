@@ -526,6 +526,12 @@ private:
                 return left / right;
             }, false);
         }
+        if (node.category == "modulo") {
+            return binary([](float left, float right) {
+                return std::abs(right) > kEpsilon
+                    ? std::fmod(left, right) : 0.0F;
+            }, false);
+        }
         if (node.category == "power") {
             const Value base = Input(node, "in1");
             const Value exponent = Input(node, "in2");
@@ -548,10 +554,76 @@ private:
                 ? binary([](float a, float b) { return std::min(a, b); }, false)
                 : binary([](float a, float b) { return std::max(a, b); }, false);
         }
-        if (node.category == "sqrt" || node.category == "sign" ||
-            node.category == "ln" || node.category == "absval" ||
+        if (node.category == "dotproduct") {
+            const Value left = Input(node, "in1");
+            const Value right = Input(node, "in2");
+            if (left.kind != Value::Kind::Numeric ||
+                right.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has non-constant dot-product operands"));
+            }
+            Value result = ParseValue("float", "0");
+            const std::size_t count = std::min(
+                ComponentCount(left.type), ComponentCount(right.type));
+            for (std::size_t component = 0U; component < count; ++component) {
+                result.number[0] +=
+                    left.number[component] * right.number[component];
+            }
+            result.number[1] = result.number[2] = result.number[3] =
+                result.number[0];
+            return result;
+        }
+        if (node.category == "crossproduct") {
+            const Value left = Input(node, "in1");
+            const Value right = Input(node, "in2");
+            if (left.kind != Value::Kind::Numeric ||
+                right.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has non-constant cross-product operands"));
+            }
+            Value result;
+            result.type = node.type;
+            result.number[0] = left.number[1] * right.number[2] -
+                left.number[2] * right.number[1];
+            result.number[1] = left.number[2] * right.number[0] -
+                left.number[0] * right.number[2];
+            result.number[2] = left.number[0] * right.number[1] -
+                left.number[1] * right.number[0];
+            return result;
+        }
+        if (node.category == "magnitude") {
+            const Value input = Input(node, "in");
+            if (input.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has a non-constant magnitude operand"));
+            }
+            float squaredLength = 0.0F;
+            for (std::size_t component = 0U;
+                 component < ComponentCount(input.type); ++component) {
+                squaredLength += input.number[component] * input.number[component];
+            }
+            return ParseValue("float", std::to_string(std::sqrt(squaredLength)));
+        }
+        if (node.category == "atan2") {
+            const char* yName = FindInput(node, "iny") ? "iny" : "in1";
+            const char* xName = FindInput(node, "inx") ? "inx" : "in2";
+            const Value y = Input(node, yName);
+            const Value x = Input(node, xName);
+            if (y.kind != Value::Kind::Numeric || x.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "has non-constant atan2 operands"));
+            }
+            return ParseValue("float", std::to_string(
+                std::atan2(y.number[0], x.number[0])));
+        }
+        if (node.category == "sqrt" || node.category == "inversesqrt" ||
+            node.category == "sign" || node.category == "ln" ||
+            node.category == "exp" || node.category == "absval" ||
             node.category == "floor" || node.category == "ceil" ||
-            node.category == "round" || node.category == "normalize") {
+            node.category == "round" || node.category == "normalize" ||
+            node.category == "sin" || node.category == "cos" ||
+            node.category == "tan" || node.category == "asin" ||
+            node.category == "acos") {
             Value result = Input(node, "in");
             if (result.kind == Value::Kind::Geometric && node.category == "normalize") {
                 return result;
@@ -561,15 +633,41 @@ private:
                 throw std::runtime_error(NodeError(node, "has a dynamic unary operand"));
             }
             const std::size_t count = ComponentCount(node.type);
+            if (node.category == "normalize") {
+                float squaredLength = 0.0F;
+                for (std::size_t component = 0U; component < count; ++component) {
+                    squaredLength += result.number[component] *
+                        result.number[component];
+                }
+                const float inverseLength = 1.0F /
+                    std::max(std::sqrt(squaredLength), kEpsilon);
+                for (std::size_t component = 0U; component < count; ++component) {
+                    result.number[component] *= inverseLength;
+                }
+                result.type = node.type;
+                return result;
+            }
             for (std::size_t component = 0; component < count; ++component) {
                 float& value = result.number[component];
                 if (node.category == "sqrt") value = std::sqrt(std::max(value, 0.0F));
+                else if (node.category == "inversesqrt") {
+                    value = 1.0F / std::sqrt(std::max(value, kEpsilon));
+                }
                 else if (node.category == "sign") value = value < 0.0F ? -1.0F : 1.0F;
                 else if (node.category == "ln") value = std::log(std::max(value, kEpsilon));
+                else if (node.category == "exp") value = std::exp(value);
                 else if (node.category == "absval") value = std::abs(value);
                 else if (node.category == "floor") value = std::floor(value);
                 else if (node.category == "ceil") value = std::ceil(value);
                 else if (node.category == "round") value = std::round(value);
+                else if (node.category == "sin") value = std::sin(value);
+                else if (node.category == "cos") value = std::cos(value);
+                else if (node.category == "tan") value = std::tan(value);
+                else if (node.category == "asin") {
+                    value = std::asin(std::clamp(value, -1.0F, 1.0F));
+                } else if (node.category == "acos") {
+                    value = std::acos(std::clamp(value, -1.0F, 1.0F));
+                }
             }
             result.type = node.type;
             return result;
