@@ -247,6 +247,43 @@ try {
               std::abs(endpointMetal.baseColor[0] - 0.9F) < 1e-5F,
           "endpoint MaterialX conductor mix lost its metalness semantic");
 
+    const hdcodex::MaterialXGeneratedProgram combinedEdfProgram{
+        .outputNode = "surface",
+        .nodes = {
+            {.name = "warm", .category = "uniform_edf",
+             .nodeDef = "ND_uniform_edf", .type = "EDF", .inputs = {
+                 {.name = "color", .type = "color3", .value = "1,0.2,0.1"}}},
+            {.name = "cool", .category = "uniform_edf",
+             .nodeDef = "ND_uniform_edf", .type = "EDF", .inputs = {
+                 {.name = "color", .type = "color3", .value = "0.1,0.4,0.8"}}},
+            {.name = "blend", .category = "mix", .nodeDef = "ND_mix_edf",
+             .type = "EDF", .inputs = {
+                 {.name = "fg", .type = "EDF", .upstreamNode = "warm"},
+                 {.name = "bg", .type = "EDF", .upstreamNode = "cool"},
+                 {.name = "mix", .type = "float", .value = "0.25"}}},
+            {.name = "fill", .category = "uniform_edf",
+             .nodeDef = "ND_uniform_edf", .type = "EDF", .inputs = {
+                 {.name = "color", .type = "color3", .value = "0.1,0.1,0.1"}}},
+            {.name = "sum", .category = "add", .nodeDef = "ND_add_edf",
+             .type = "EDF", .inputs = {
+                 {.name = "in1", .type = "EDF", .upstreamNode = "blend"},
+                 {.name = "in2", .type = "EDF", .upstreamNode = "fill"}}},
+            {.name = "scaled", .category = "multiply",
+             .nodeDef = "ND_multiply_edf", .type = "EDF", .inputs = {
+                 {.name = "in1", .type = "EDF", .upstreamNode = "sum"},
+                 {.name = "in2", .type = "float", .value = "0.5"}}},
+            {.name = "surface", .category = "surface", .nodeDef = "ND_surface",
+             .type = "surfaceshader", .inputs = {
+                 {.name = "edf", .type = "EDF", .upstreamNode = "scaled"}}},
+        }};
+    const auto combinedEdf =
+        hdcodex::CompileMaterialXClosure(combinedEdfProgram);
+    Check(std::abs(combinedEdf.emission[0] - 0.2125F) < 1e-5F &&
+              std::abs(combinedEdf.emission[1] - 0.225F) < 1e-5F &&
+              std::abs(combinedEdf.emission[2] - 0.3625F) < 1e-5F &&
+              std::abs(combinedEdf.emissionWeight - 1.0F) < 1e-5F,
+          "MaterialX EDF mix/add/multiply combiners changed emitted radiance");
+
     const hdcodex::MaterialXGeneratedProgram reconstructedNormalProgram{
         .outputNode = "surface",
         .nodes = {

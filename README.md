@@ -67,6 +67,9 @@ asset-input and display-output format, not the path-throughput representation.
   USD-native `Usd*` networks remain explicitly unsupported.
 - Constant or image-driven base color, metalness, roughness, emission, opacity,
   normal, transmission, specular color/weight, coat, and subsurface controls.
+- Uniform MaterialX EDFs with constant `mix`, `add`, and scalar/color
+  `multiply` combiners, lowered from the expanded graph without surface-model
+  special cases.
 - Constant or image-driven MaterialX rough-diffuse weight and roughness in
   direct and indirect transport.
 - MaterialX anisotropic GGX roughness pairs and layered Conty-Kulla/Zeltner

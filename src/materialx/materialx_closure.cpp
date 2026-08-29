@@ -1039,8 +1039,36 @@ private:
             if (Near(amount.number[0], 1.0F)) {
                 return EvaluateEdf(evaluator.Upstream(node, "fg"));
             }
-            throw std::runtime_error(NodeError(
-                node, "has a partial EDF mix unsupported by transport"));
+            const Value foreground = EvaluateEdf(evaluator.Upstream(node, "fg"));
+            const Value background = EvaluateEdf(evaluator.Upstream(node, "bg"));
+            if (foreground.kind != Value::Kind::Numeric ||
+                background.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "partially mixes texture-driven EDFs"));
+            }
+            Value result = background;
+            result.type = "color3";
+            const float blend = std::clamp(amount.number[0], 0.0F, 1.0F);
+            for (std::size_t component = 0U; component < 3U; ++component) {
+                result.number[component] = std::lerp(
+                    background.number[component],
+                    foreground.number[component], blend);
+            }
+            return result;
+        }
+        if (node.category == "add" && node.type == "EDF") {
+            Value left = EvaluateEdf(evaluator.Upstream(node, "in1"));
+            const Value right = EvaluateEdf(evaluator.Upstream(node, "in2"));
+            if (left.kind != Value::Kind::Numeric ||
+                right.kind != Value::Kind::Numeric) {
+                throw std::runtime_error(NodeError(
+                    node, "adds texture-driven EDFs"));
+            }
+            left.type = "color3";
+            for (std::size_t component = 0U; component < 3U; ++component) {
+                left.number[component] += right.number[component];
+            }
+            return left;
         }
         if (node.category == "multiply" && node.type == "EDF") {
             Value base = EvaluateEdf(evaluator.Upstream(node, "in1"));
@@ -1048,9 +1076,12 @@ private:
             if (base.kind != Value::Kind::Numeric || tint.kind != Value::Kind::Numeric) {
                 throw std::runtime_error(NodeError(node, "multiplies a texture EDF"));
             }
+            const std::size_t tintComponents = ComponentCount(tint.type);
             for (std::size_t component = 0; component < 3U; ++component) {
-                base.number[component] *= tint.number[component];
+                base.number[component] *= tint.number[
+                    tintComponents == 1U ? 0U : component];
             }
+            base.type = "color3";
             return base;
         }
         throw std::runtime_error(NodeError(node, "is an unsupported active EDF primitive"));

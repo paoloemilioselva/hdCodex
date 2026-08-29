@@ -105,7 +105,8 @@ The path backend compiles the supported subset of that program into its compact
 closure ABI. It no longer traverses the Hydra network to find a high-level
 parameter or first reachable filename. Channel operations, color correction,
 anisotropy, sheen, and other operations are interpreted from that expanded
-program. Common normal-channel reconstruction is retained exactly. Operations
+program. Uniform EDFs preserve constant partial mixes, sums, and scalar/color
+products. Common normal-channel reconstruction is retained exactly. Operations
 outside the compact ABI preserve an independently supported base closure and,
 for texture adjustments, currently retain the source image; unsupported
 terminal closures still reject.
