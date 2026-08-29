@@ -204,6 +204,7 @@ generated architecture.
 | OpenPBR and Standard Surface | High-level NodeGraphs are expanded generically; supported primitive closure subsets compile without shader-name special cases |
 | USD Preview Surface | USD-native networks are rejected; genuinely MaterialX-authored variants follow normal NodeGraph expansion and closure capability checks |
 | Diffuse reflection | Lambert, qualitative and energy-preserving Oren-Nayar, and Burley primitives with constant or texture-driven weight/roughness; cosine-proposal indirect sampling |
+| Diffuse transmission | MaterialX translucent primitive with constant or texture-driven weight/color, opposite-hemisphere direct evaluation, cosine sampling, and matching PDFs |
 | Dielectric reflection | Partial IOR, Schlick Fresnel, and GGX reflection |
 | Dielectric transmission | Refraction, total internal reflection, thin-wall pass-through, absorption, and homogeneous scattering; no rough microfacet BTDF |
 | Conductors | Metallic base color used as F0; no complete conductor/complex-IOR semantics |
@@ -343,8 +344,9 @@ labeled as a lighting preview rather than a path-transport reference.
   behavior, reference layers, and energy compensation.
 - Standard Surface and MaterialX USD Preview Surface through their authored
   NodeGraphs, with no shader-name special cases in transport.
-- Conductor complex IOR, dielectric boundaries, translucent,
-  subsurface, hair, and the standard closure combiners.
+- Conductor complex IOR, dielectric boundaries, subsurface, hair, and the
+  remaining standard closure combiners. Diffuse translucent transport is
+  implemented independently from subsurface.
 - White-furnace, reciprocity, normalization, sample/eval/pdf consistency, and
   MaterialX reference-image tests for every primitive.
 

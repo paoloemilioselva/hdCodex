@@ -247,6 +247,47 @@ try {
               std::abs(endpointMetal.baseColor[0] - 0.9F) < 1e-5F,
           "endpoint MaterialX conductor mix lost its metalness semantic");
 
+    const hdcodex::MaterialXGeneratedProgram translucentProgram{
+        .outputNode = "surface",
+        .nodes = {
+            {.name = "diffuse", .category = "oren_nayar_diffuse_bsdf",
+             .nodeDef = "ND_oren_nayar_diffuse_bsdf", .type = "BSDF",
+             .inputs = {
+                 {.name = "weight", .type = "float", .value = "1"},
+                 {.name = "color", .type = "color3", .value = "0.1,0.2,0.3"},
+                 {.name = "roughness", .type = "float", .value = "0"}}},
+            {.name = "translucent", .category = "translucent_bsdf",
+             .nodeDef = "ND_translucent_bsdf", .type = "BSDF",
+             .inputs = {
+                 {.name = "weight", .type = "float", .value = "0.8"},
+                 {.name = "color", .type = "color3", .value = "0.9,0.2,0.1"}}},
+            {.name = "mix", .category = "mix", .nodeDef = "ND_mix_bsdf",
+             .type = "BSDF", .inputs = {
+                 {.name = "fg", .type = "BSDF", .upstreamNode = "translucent"},
+                 {.name = "bg", .type = "BSDF", .upstreamNode = "diffuse"},
+                 {.name = "mix", .type = "float", .value = "0.25"}}},
+            {.name = "surface", .category = "surface", .nodeDef = "ND_surface",
+             .type = "surfaceshader", .inputs = {
+                 {.name = "bsdf", .type = "BSDF", .upstreamNode = "mix"}}},
+        }};
+    const auto translucent =
+        hdcodex::CompileMaterialXClosure(translucentProgram);
+    Check(std::abs(translucent.translucentWeight - 0.2F) < 1e-5F &&
+              std::abs(translucent.translucentColor[0] - 0.9F) < 1e-5F &&
+              std::abs(translucent.diffuseWeight - 1.0F) < 1e-5F &&
+              std::abs(translucent.subsurface) < 1e-5F &&
+              !translucent.thinWalled,
+          "MaterialX translucent BSDF was not kept independent from subsurface");
+    auto inverseTranslucentProgram = translucentProgram;
+    inverseTranslucentProgram.nodes[2].inputs[0].upstreamNode = "diffuse";
+    inverseTranslucentProgram.nodes[2].inputs[1].upstreamNode = "translucent";
+    inverseTranslucentProgram.nodes[2].inputs[2].value = "0.75";
+    const auto inverseTranslucent =
+        hdcodex::CompileMaterialXClosure(inverseTranslucentProgram);
+    Check(std::abs(inverseTranslucent.translucentWeight - 0.2F) < 1e-5F &&
+              std::abs(inverseTranslucent.diffuseWeight - 1.0F) < 1e-5F,
+          "inverse MaterialX diffuse/translucent mix changed lobe weights");
+
     const hdcodex::MaterialXGeneratedProgram combinedEdfProgram{
         .outputNode = "surface",
         .nodes = {

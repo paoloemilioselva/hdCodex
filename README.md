@@ -44,6 +44,8 @@ asset-input and display-output format, not the path-throughput representation.
 - MaterialX Lambert, qualitative and energy-preserving Oren-Nayar, and Burley
   diffuse plus energy-partitioned GGX reflection for dielectrics, artistic
   metalness conductors, and layered coats.
+- MaterialX `translucent_bsdf` as an independent cosine-sampled diffuse
+  transmission lobe with back-side direct lighting and matching MIS PDFs.
 - Fresnel reflection/refraction, thin-walled transmission, wavelength-dependent
   Cauchy IOR from OpenPBR dispersion scale and Abbe number, total internal
   reflection, and nested-interface paths.
@@ -66,7 +68,8 @@ asset-input and display-output format, not the path-throughput representation.
   image as a documented approximation; unsupported terminal closures reject.
   USD-native `Usd*` networks remain explicitly unsupported.
 - Constant or image-driven base color, metalness, roughness, emission, opacity,
-  normal, transmission, specular color/weight, coat, and subsurface controls.
+  normal, dielectric transmission, diffuse-translucent weight/color, specular
+  color/weight, coat, and subsurface controls.
 - Uniform MaterialX EDFs with constant `mix`, `add`, and scalar/color
   `multiply` combiners, lowered from the expanded graph without surface-model
   special cases.

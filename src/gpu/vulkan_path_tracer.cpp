@@ -28,7 +28,7 @@ constexpr std::uint32_t kMaxLights = 64U;
 constexpr std::uint32_t kOpaqueSceneFlag = 1U << 8U;
 constexpr std::uint32_t kLightCountShift = 16U;
 
-constexpr auto kPathTracerSource = R"glsl(
+const std::string kPathTracerSource = std::string(R"glsl(
 #version 460
 #extension GL_EXT_ray_query : require
 #extension GL_EXT_nonuniform_qualifier : require
@@ -54,11 +54,13 @@ struct GpuMaterial {
     vec4 transmissionScatter;
     vec4 sheenColorMode;
     vec4 diffuseProperties;
+    vec4 translucentColorWeight;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
     uvec4 textureIndices3;
     uvec4 textureIndices4;
+    uvec4 textureIndices5;
 };
 layout(std430, set = 0, binding = 6) readonly buffer Materials { GpuMaterial materials[]; };
 layout(std430, set = 0, binding = 7) readonly buffer TextureCoordinates { vec2 texcoords[]; };
@@ -173,7 +175,7 @@ vec3 spectralSensor(float wavelength)
         -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
          0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z);
 }
-)glsl"
+)glsl") +
 R"glsl(
 
 vec3 cosineHemisphere(vec3 normal, inout uint state)
@@ -361,7 +363,7 @@ vec3 ggxSampleWeightAnisotropic(vec3 incident, vec3 outgoing, vec3 normal,
         normal, tangent, viewDirection, outgoing, roughness, f0) *
         nDotL / max(pdf, 1e-6);
 }
-)glsl"
+)glsl" +
 R"glsl(
 
 float ggxReflectionPdfAnisotropic(vec3 normal, vec3 tangent,
@@ -388,22 +390,30 @@ float powerHeuristic(float firstPdf, float secondPdf)
 float surfaceReflectionPdf(
     vec3 normal, vec3 tangent, vec3 viewDirection, vec3 lightDirection,
     vec2 roughness, vec2 coatRoughness,
-    float sheenProbability, float coatProbability, float specularProbability)
+    float sheenProbability, float coatProbability, float specularProbability,
+    float translucentProbability)
 {
-    float cosinePdf = max(dot(normal, lightDirection), 0.0) /
+    float reflectionCosinePdf = max(dot(normal, lightDirection), 0.0) /
+        3.14159265359;
+    float transmissionCosinePdf = max(-dot(normal, lightDirection), 0.0) /
         3.14159265359;
     float coatPdf = ggxReflectionPdfAnisotropic(
         normal, tangent, viewDirection, lightDirection, coatRoughness);
     float specularPdf = ggxReflectionPdfAnisotropic(
         normal, tangent, viewDirection, lightDirection, roughness);
+    float diffusePdf = mix(
+        reflectionCosinePdf, transmissionCosinePdf,
+        translucentProbability);
     float basePdf = coatProbability * coatPdf +
         (1.0 - coatProbability) *
         (specularProbability * specularPdf +
-         (1.0 - specularProbability) * cosinePdf);
-    return sheenProbability * cosinePdf +
+         (1.0 - specularProbability) * diffusePdf);
+    return sheenProbability * reflectionCosinePdf +
         (1.0 - sheenProbability) * basePdf;
 }
 
+)glsl" +
+R"glsl(
 float sheenDirectionalAlbedo(float nDotV, float roughness)
 {
     float x = clamp(nDotV, 0.0, 1.0);
@@ -694,7 +704,7 @@ float surfaceOpacity(uint primitive, vec2 barycentrics)
     return clamp(sampleMaterialTexture(material.textureIndices1.x, uv,
         vec4(material.transmissionOpacityIor.y)).r, 0.0, 1.0);
 }
-)glsl"
+)glsl" +
 R"glsl(
 
 vec3 applyNormalMap(uint textureIndex, bool flipY, float scale,
@@ -901,20 +911,27 @@ vec3 evaluateDiffuseReflection(
     return vec3(nDotL / 3.14159265359);
 }
 
+)glsl" +
+R"glsl(
 vec3 evaluateDirectSurface(
     vec3 normal, vec3 tangent, vec3 viewDirection, vec3 lightDirection,
     vec3 diffuseColor, float transmission, float subsurface,
     float diffuseWeight, float diffuseRoughness, uint diffuseModel,
+    float translucentWeight, vec3 translucentColor,
     float metalness, vec2 roughness, vec3 f0,
     float coat, vec2 coatRoughness, vec3 coatF0,
     float sheen, vec3 sheenColor, float sheenRoughness, bool sheenZeltner,
     float diffuseScale, float specularScale)
 {
-    float nDotL = max(dot(normal, lightDirection), 0.0);
-    float wrappedNdotL = max((dot(normal, lightDirection) + 0.5 * subsurface) /
+    float signedNdotL = dot(normal, lightDirection);
+    float nDotL = max(signedNdotL, 0.0);
+    float backNdotL = max(-signedNdotL, 0.0);
+    float wrappedNdotL = max((signedNdotL + 0.5 * subsurface) /
                              (1.0 + 0.5 * subsurface), 0.0);
-    if (wrappedNdotL <= 0.0 && nDotL <= 0.0) return vec3(0.0);
-    vec3 halfway = normalize(viewDirection + lightDirection);
+    if (wrappedNdotL <= 0.0 && nDotL <= 0.0 &&
+        backNdotL * translucentWeight <= 0.0) return vec3(0.0);
+    vec3 halfway = nDotL > 0.0
+        ? normalize(viewDirection + lightDirection) : normal;
     vec3 baseFresnel = fresnelSchlick(
         max(dot(viewDirection, halfway), 0.0), f0);
     vec3 diffuseResponse = mix(evaluateDiffuseReflection(
@@ -922,8 +939,14 @@ vec3 evaluateDirectSurface(
         diffuseRoughness, diffuseModel),
         vec3(wrappedNdotL / 3.14159265359), subsurface);
     vec3 diffuse = diffuseScale * (vec3(1.0) - baseFresnel) *
-        diffuseWeight * (1.0 - metalness) * diffuseColor *
+        diffuseWeight * (1.0 - translucentWeight) *
+        (1.0 - metalness) * diffuseColor *
         diffuseResponse * (1.0 - transmission);
+    vec3 viewFresnel = fresnelSchlick(
+        max(dot(normal, viewDirection), 0.0), f0);
+    vec3 translucent = diffuseScale * (vec3(1.0) - viewFresnel) *
+        translucentWeight * (1.0 - metalness) * translucentColor *
+        (backNdotL / 3.14159265359) * (1.0 - transmission);
     vec3 specular = specularScale * nDotL * evaluateGGXAnisotropic(
         normal, tangent, viewDirection, lightDirection, roughness, f0);
     vec3 coatFresnel = vec3(0.0);
@@ -936,7 +959,7 @@ vec3 evaluateDirectSurface(
             coatRoughness, coatF0);
     }
     vec3 baseLayer = (vec3(1.0) - coat * coatFresnel) *
-        (diffuse + specular) + coatSpecular;
+        (diffuse + translucent + specular) + coatSpecular;
     float sheenAlbedo = sheenZeltner
         ? sheenZeltnerDirectionalAlbedo(
             max(dot(normal, viewDirection), 0.0), sheenRoughness)
@@ -946,6 +969,12 @@ vec3 evaluateDirectSurface(
         normal, viewDirection, lightDirection, sheenRoughness, sheenZeltner);
     return baseLayer * (1.0 - clamp(sheen * sheenAlbedo, 0.0, 1.0)) +
         sheenLayer;
+}
+
+vec3 offsetSurfaceOrigin(vec3 position, vec3 geometricNormal, vec3 direction)
+{
+    float side = dot(geometricNormal, direction) >= 0.0 ? 1.0 : -1.0;
+    return position + geometricNormal * (0.002 * side);
 }
 
 vec3 uniformSphere(inout uint state)
@@ -1058,7 +1087,7 @@ bool randomWalkSubsurface(vec3 entry, vec3 outwardNormal,
     }
     return false;
 }
-)glsl"
+)glsl" +
 R"glsl(
 void main()
 {
@@ -1289,6 +1318,14 @@ void main()
             material.textureIndices4.y, surfaceUv,
             vec4(material.transmissionScatter.w)).r, 0.01, 1.0);
         bool sheenZeltner = material.sheenColorMode.w > 0.5;
+        float translucentWeight = clamp(sampleMaterialTexture(
+            material.textureIndices5.x, surfaceUv,
+            vec4(material.translucentColorWeight.a)).r, 0.0, 1.0);
+        vec3 translucentColorRgb = sampleMaterialTexture(
+            material.textureIndices5.y, surfaceUv,
+            vec4(material.translucentColorWeight.rgb, 1.0)).rgb;
+        vec3 translucentColor = vec3(reflectanceSpectrum(
+            translucentColorRgb, wavelength));
 
         vec3 viewDirection = normalize(-rayDirection);
         float sheenAlbedo = sheenZeltner
@@ -1307,15 +1344,22 @@ void main()
             max(dot(normal, viewDirection), 0.0), f0);
         vec3 specularContribution = baseFresnel;
         vec3 diffuseContribution = (vec3(1.0) - baseFresnel) *
-            diffuseWeight * (1.0 - metalness) * diffuseColor;
+            diffuseWeight * (1.0 - translucentWeight) *
+            (1.0 - metalness) * diffuseColor;
+        vec3 translucentContribution = (vec3(1.0) - baseFresnel) *
+            translucentWeight * (1.0 - metalness) * translucentColor;
         float specularEnergy = luminance(specularContribution);
         float diffuseEnergy = luminance(diffuseContribution);
+        float translucentEnergy = luminance(translucentContribution);
+        float baseEnergy = diffuseEnergy + translucentEnergy;
         float specularProbability = clamp(
-            specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
+            specularEnergy / max(specularEnergy + baseEnergy, 1e-5),
             0.05, 0.95);
+        float translucentProbability = baseEnergy > 1e-5
+            ? translucentEnergy / baseEnergy : 0.0;
         uint lightCount = (camera.frame.w >> 16u) & 0xffu;
         bool hasMeshLights = hasEmissiveTriangles();
-)glsl"
+)glsl" +
 R"glsl(
         if (lightCount > 0u) {
             uint lightIndex = min(uint(randomFloat(rng) * float(lightCount)),
@@ -1406,13 +1450,15 @@ R"glsl(
                 vec3 direct = evaluateDirectSurface(
                     normal, tangent, viewDirection, lightDirection,
                     diffuseColor, transmission, subsurface,
-                    diffuseWeight, diffuseRoughness, diffuseModel, metalness,
+                    diffuseWeight, diffuseRoughness, diffuseModel,
+                    translucentWeight, translucentColor, metalness,
                     roughness, f0, coat, coatRoughness, coatF0,
                     sheen, sheenColor, sheenRoughness, sheenZeltner,
                     light.controls.x, light.controls.y);
                 if (any(greaterThan(direct, vec3(0.0)))) {
                     vec3 visibility = shadowVisibility(
-                        hit + orientedGeometricNormal * 0.002,
+                        offsetSurfaceOrigin(
+                            hit, orientedGeometricNormal, lightDirection),
                         lightDirection, maximumShadowDistance, light);
                     vec3 spectralLight = vec3(illuminantSpectrum(
                         lightRadiance, wavelength));
@@ -1423,7 +1469,8 @@ R"glsl(
                             surfaceReflectionPdf(
                                 normal, tangent, viewDirection, lightDirection,
                                 roughness, coatRoughness, sheenProbability,
-                                coatProbability, specularProbability))
+                                coatProbability, specularProbability,
+                                translucentProbability))
                         : 1.0;
                     radiance += throughput * direct * spectralLight *
                         spectralVisibility * inversePdf * float(lightCount) *
@@ -1443,12 +1490,14 @@ R"glsl(
             vec3 direct = evaluateDirectSurface(
                 normal, tangent, viewDirection, sunDirection, diffuseColor,
                 transmission, subsurface, diffuseWeight, diffuseRoughness,
-                diffuseModel, metalness, roughness, f0,
+                diffuseModel, translucentWeight, translucentColor,
+                metalness, roughness, f0,
                 coat, coatRoughness, coatF0,
                 sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 1.0);
             if (any(greaterThan(direct, vec3(0.0)))) {
                 vec3 visibility = shadowVisibility(
-                    hit + orientedGeometricNormal * 0.002,
+                    offsetSurfaceOrigin(
+                        hit, orientedGeometricNormal, sunDirection),
                     sunDirection, 10000.0, lights[0]);
                 const vec3 sunRadiance = vec3(3.45575, 3.14159, 2.82743);
                 vec3 spectralSun = vec3(illuminantSpectrum(
@@ -1461,12 +1510,14 @@ R"glsl(
             vec3 skyDirect = evaluateDirectSurface(
                 normal, tangent, viewDirection, skyDirection, diffuseColor,
                 transmission, subsurface, diffuseWeight, diffuseRoughness,
-                diffuseModel, metalness, roughness, f0,
+                diffuseModel, translucentWeight, translucentColor,
+                metalness, roughness, f0,
                 coat, coatRoughness, coatF0,
                 sheen, sheenColor, sheenRoughness, sheenZeltner, 1.0, 0.0);
             if (any(greaterThan(skyDirect, vec3(0.0)))) {
                 vec3 visibility = shadowVisibility(
-                    hit + orientedGeometricNormal * 0.002,
+                    offsetSurfaceOrigin(
+                        hit, orientedGeometricNormal, skyDirection),
                     skyDirection, 10000.0, lights[0]);
                 vec3 spectralSky = vec3(illuminantSpectrum(
                     environment(skyDirection), wavelength));
@@ -1475,6 +1526,31 @@ R"glsl(
                 radiance += throughput * skyDirect * spectralSky *
                     spectralVisibility * (3.14159265359 /
                     max(dot(normal, skyDirection), 1e-4));
+            }
+            if (translucentWeight > 0.0) {
+                vec3 backSkyDirection = cosineHemisphere(-normal, rng);
+                vec3 backSkyDirect = evaluateDirectSurface(
+                    normal, tangent, viewDirection, backSkyDirection,
+                    diffuseColor, transmission, subsurface,
+                    diffuseWeight, diffuseRoughness, diffuseModel,
+                    translucentWeight, translucentColor,
+                    metalness, roughness, f0,
+                    coat, coatRoughness, coatF0,
+                    sheen, sheenColor, sheenRoughness, sheenZeltner,
+                    1.0, 0.0);
+                if (any(greaterThan(backSkyDirect, vec3(0.0)))) {
+                    vec3 visibility = shadowVisibility(
+                        offsetSurfaceOrigin(
+                            hit, orientedGeometricNormal, backSkyDirection),
+                        backSkyDirection, 10000.0, lights[0]);
+                    vec3 spectralSky = vec3(illuminantSpectrum(
+                        environment(backSkyDirection), wavelength));
+                    vec3 spectralVisibility = vec3(reflectanceSpectrum(
+                        visibility, wavelength));
+                    radiance += throughput * backSkyDirect * spectralSky *
+                        spectralVisibility * (3.14159265359 /
+                        max(dot(-normal, backSkyDirection), 1e-4));
+                }
             }
         }
 
@@ -1509,13 +1585,15 @@ R"glsl(
                     vec3 direct = evaluateDirectSurface(
                         normal, tangent, viewDirection, lightDirection,
                         diffuseColor, transmission, subsurface,
-                        diffuseWeight, diffuseRoughness, diffuseModel, metalness,
+                        diffuseWeight, diffuseRoughness, diffuseModel,
+                        translucentWeight, translucentColor, metalness,
                         roughness, f0, coat, coatRoughness, coatF0,
                         sheen, sheenColor, sheenRoughness, sheenZeltner,
                         1.0, 1.0);
                     if (any(greaterThan(direct, vec3(0.0))) &&
                         meshLightVisible(
-                            hit + orientedGeometricNormal * 0.002,
+                            offsetSurfaceOrigin(
+                                hit, orientedGeometricNormal, lightDirection),
                             lightDirection,
                             max(lightDistance - 0.003, 0.001))) {
                         vec2 lightUv = surfaceTextureCoordinates(
@@ -1529,7 +1607,8 @@ R"glsl(
                         float bsdfPdf = surfaceReflectionPdf(
                             normal, tangent, viewDirection, lightDirection,
                             roughness, coatRoughness, sheenProbability,
-                            coatProbability, specularProbability);
+                            coatProbability, specularProbability,
+                            translucentProbability);
                         float misWeight = powerHeuristic(lightPdf, bsdfPdf);
                         radiance += throughput * direct * spectralLight *
                             (misWeight / lightPdf);
@@ -1537,7 +1616,7 @@ R"glsl(
                 }
             }
         }
-)glsl"
+)glsl" +
 R"glsl(
 
         if (randomFloat(rng) < transmission) {
@@ -1619,37 +1698,48 @@ R"glsl(
                         roughness, f0) / specularProbability;
                     environmentOnMiss = max(roughness.x, roughness.y) < 0.2;
                 } else {
-                    throughput *= diffuseContribution /
-                        max(1.0 - specularProbability, 1e-4);
-                    if (subsurface > 0.0 && randomFloat(rng) < subsurface) {
-                        float radius = max(reconstructRgb(
-                            subsurfaceRadiusRgb, wavelength) *
-                            max(material.subsurfaceWeightScale.y, 0.0), 0.001);
-                        float albedo = reflectanceSpectrum(
-                            subsurfaceColorRgb, wavelength);
-                        vec3 exitOrigin;
-                        vec3 exitDirection;
-                        float attenuation;
-                        if (randomWalkSubsurface(
-                            hit, orientedGeometricNormal, radius, albedo,
-                            material.subsurfaceWeightScale.z, rng,
-                            exitOrigin, exitDirection, attenuation)) {
-                            throughput *= attenuation;
-                            rayOrigin = exitOrigin;
-                            rayDirection = exitDirection;
-                            environmentOnMiss = true;
-                            previousWasDelta = true;
-                            previousBsdfPdf = 0.0;
-                            continue;
+                    if (translucentProbability > 0.0 &&
+                        randomFloat(rng) < translucentProbability) {
+                        throughput *= translucentContribution /
+                            max((1.0 - specularProbability) *
+                                translucentProbability, 1e-4);
+                        rayDirection = cosineHemisphere(-normal, rng);
+                        rayOrigin = offsetSurfaceOrigin(
+                            hit, orientedGeometricNormal, rayDirection);
+                    } else {
+                        throughput *= diffuseContribution /
+                            max((1.0 - specularProbability) *
+                                (1.0 - translucentProbability), 1e-4);
+                        if (subsurface > 0.0 && randomFloat(rng) < subsurface) {
+                            float radius = max(reconstructRgb(
+                                subsurfaceRadiusRgb, wavelength) *
+                                max(material.subsurfaceWeightScale.y, 0.0), 0.001);
+                            float albedo = reflectanceSpectrum(
+                                subsurfaceColorRgb, wavelength);
+                            vec3 exitOrigin;
+                            vec3 exitDirection;
+                            float attenuation;
+                            if (randomWalkSubsurface(
+                                hit, orientedGeometricNormal, radius, albedo,
+                                material.subsurfaceWeightScale.z, rng,
+                                exitOrigin, exitDirection, attenuation)) {
+                                throughput *= attenuation;
+                                rayOrigin = exitOrigin;
+                                rayDirection = exitDirection;
+                                environmentOnMiss = true;
+                                previousWasDelta = true;
+                                previousBsdfPdf = 0.0;
+                                continue;
+                            }
                         }
+                        rayDirection = cosineHemisphere(normal, rng);
+                        float lambertResponse = max(
+                            dot(normal, rayDirection), 0.0) / 3.14159265359;
+                        throughput *= evaluateDiffuseReflection(
+                            normal, viewDirection, rayDirection, diffuseColor,
+                            diffuseRoughness, diffuseModel) /
+                            max(lambertResponse, 1e-6);
                     }
-                    rayDirection = cosineHemisphere(normal, rng);
-                    float lambertResponse = max(dot(normal, rayDirection), 0.0) /
-                        3.14159265359;
-                    throughput *= evaluateDiffuseReflection(
-                        normal, viewDirection, rayDirection, diffuseColor,
-                        diffuseRoughness, diffuseModel) /
-                        max(lambertResponse, 1e-6);
                 }
             }
         }
@@ -1657,7 +1747,8 @@ R"glsl(
             previousBsdfPdf = surfaceReflectionPdf(
                 normal, tangent, viewDirection, rayDirection,
                 roughness, coatRoughness, sheenProbability,
-                coatProbability, specularProbability);
+                coatProbability, specularProbability,
+                translucentProbability);
             previousWasDelta = false;
             environmentOnMiss = true;
         }
@@ -1708,12 +1799,16 @@ struct GpuMaterial {
     std::array<float, 4> transmissionScatter;
     std::array<float, 4> sheenColorMode;
     std::array<float, 4> diffuseProperties;
+    std::array<float, 4> translucentColorWeight;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
     std::array<std::uint32_t, 4> textureIndices3;
     std::array<std::uint32_t, 4> textureIndices4;
+    std::array<std::uint32_t, 4> textureIndices5;
 };
+
+static_assert(sizeof(GpuMaterial) == 21U * 16U);
 
 struct GpuLight {
     std::array<float, 4> colorIntensity;
@@ -2281,8 +2376,8 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v17." + modeName;
-        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v10." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v18." + modeName;
+        options.materialAbi = "hdcodex.pathtracer.materialx-surface.v11." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
             options.optimization = GlslCompileOptions::Optimization::None;
@@ -2542,6 +2637,9 @@ public:
                 {0.0F, 0.0F, 0.0F, 0.0F},
                 {1.0F, 1.0F, 1.0F, 0.0F},
                 {0.0F, 0.0F, 1.0F, 0.0F},
+                {1.0F, 1.0F, 1.0F, 0.0F},
+                {kMissingTexture, kMissingTexture,
+                 kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
                  kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
@@ -2594,6 +2692,8 @@ public:
                 {material.diffuseRoughness,
                  static_cast<float>(material.diffuseModel),
                  material.diffuseWeight, 0.0F},
+                {material.translucentColor[0], material.translucentColor[1],
+                 material.translucentColor[2], material.translucentWeight},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),
@@ -2614,6 +2714,9 @@ public:
                  textureIndex(material.sheenRoughnessTexture),
                  textureIndex(material.diffuseRoughnessTexture),
                  textureIndex(material.diffuseWeightTexture)},
+                {textureIndex(material.translucentWeightTexture),
+                 textureIndex(material.translucentColorTexture),
+                 kMissingTexture, kMissingTexture},
             });
             const float emissionLuminance = material.emissionTexture.empty()
                 ? 0.2126F * std::max(material.emission[0], 0.0F) +

@@ -377,6 +377,26 @@ try {
           "zero-opacity surface did not reveal the blue environment");
 
     scene->materials.front().opacity = 1.0F;
+    scene->materials.front().baseColor = {0.0F, 0.0F, 0.0F};
+    scene->materials.front().baseColorTexture.clear();
+    scene->materials.front().diffuseWeight = 0.0F;
+    scene->materials.front().specularWeight = 0.0F;
+    scene->materials.front().coat = 0.0F;
+    tracer.SetScene(scene);
+    const auto opaqueBlack = renderSamples(64U);
+    const float opaqueBlackLuma = opaqueBlack[center] +
+        opaqueBlack[center + 1] + opaqueBlack[center + 2];
+    scene->materials.front().translucentWeight = 1.0F;
+    scene->materials.front().translucentColor = {1.0F, 0.02F, 0.01F};
+    tracer.SetScene(scene);
+    const auto translucent = renderSamples(64U);
+    Check(translucent[center] > translucent[center + 1] * 2.0F &&
+              translucent[center] + translucent[center + 1] +
+                  translucent[center + 2] > opaqueBlackLuma + 0.01F,
+          "MaterialX diffuse transmission did not sample back-side lighting");
+
+    scene->materials.front().translucentWeight = 0.0F;
+    scene->materials.front().diffuseWeight = 1.0F;
     scene->materials.front().transmission = 1.0F;
     scene->materials.front().transmissionColor = {1.0F, 0.05F, 0.02F};
     scene->materials.front().thinWalled = true;

@@ -164,6 +164,8 @@ void AttachGeneratedProgram(
              &material.coatColorTexture, &material.coatRoughnessTexture,
              &material.sheenTexture, &material.sheenColorTexture,
              &material.sheenRoughnessTexture,
+             &material.translucentWeightTexture,
+             &material.translucentColorTexture,
              &material.subsurfaceTexture, &material.subsurfaceColorTexture,
              &material.subsurfaceRadiusTexture}) {
         resolveClosureTexture(*texture);

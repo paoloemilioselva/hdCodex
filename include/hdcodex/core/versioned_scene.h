@@ -117,6 +117,7 @@ struct SceneMaterial {
     std::array<float, 3> specularColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> coatColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> sheenColor{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> translucentColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> subsurfaceColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> subsurfaceRadius{1.0F, 0.2F, 0.1F};
     DiffuseModel diffuseModel{DiffuseModel::Lambert};
@@ -142,6 +143,7 @@ struct SceneMaterial {
     float sheenRoughness{0.3F};
     /// MaterialX sheen mode: 0 is Conty-Kulla, 1 is Zeltner.
     std::uint32_t sheenMode{0U};
+    float translucentWeight{0.0F};
     float subsurface{0.0F};
     float subsurfaceScale{1.0F};
     float subsurfaceScatterAnisotropy{0.0F};
@@ -168,6 +170,8 @@ struct SceneMaterial {
     std::string sheenTexture;
     std::string sheenColorTexture;
     std::string sheenRoughnessTexture;
+    std::string translucentWeightTexture;
+    std::string translucentColorTexture;
     std::string subsurfaceTexture;
     std::string subsurfaceColorTexture;
     std::string subsurfaceRadiusTexture;

@@ -725,6 +725,7 @@ enum ClosureBits : unsigned int {
     ClosureTransmission = 1U << 3U,
     ClosureSubsurface = 1U << 4U,
     ClosureSheen = 1U << 5U,
+    ClosureTranslucent = 1U << 6U,
 };
 
 struct ClosureCompiler final {
@@ -750,7 +751,11 @@ struct ClosureCompiler final {
         }
         if (const MaterialXProgramInput* bsdf = FindInput(surface, "bsdf");
             bsdf && !bsdf->upstreamNode.empty()) {
-            VisitBsdf(evaluator.Node(bsdf->upstreamNode), 0, false);
+            const MaterialXProgramNode& bsdfNode =
+                evaluator.Node(bsdf->upstreamNode);
+            containsDiffuseClosure =
+                (Classify(bsdfNode) & ClosureDiffuse) != 0U;
+            VisitBsdf(bsdfNode, 0, false);
         }
         if (const MaterialXProgramInput* edf = FindInput(surface, "edf");
             edf && !edf->upstreamNode.empty()) {
@@ -784,8 +789,8 @@ private:
             const Value mode = evaluator.InputOr(node, "scatter_mode", "string", "R");
             return mode.text == "T" ? ClosureTransmission : ClosureReflection;
         }
-        if (node.category == "subsurface_bsdf" ||
-            node.category == "translucent_bsdf") return ClosureSubsurface;
+        if (node.category == "subsurface_bsdf") return ClosureSubsurface;
+        if (node.category == "translucent_bsdf") return ClosureTranslucent;
         if (node.category == "sheen_bsdf") return ClosureSheen;
         if (node.category == "mix" || node.category == "layer") {
             unsigned int result = ClosureNone;
@@ -834,6 +839,24 @@ private:
                 AssignScalar(amount, material.subsurface,
                              material.subsurfaceTexture, node, "subsurface mix");
                 semanticMix = true;
+            } else if ((foregroundKind & ClosureTranslucent) != 0U &&
+                       (backgroundKind & ClosureDiffuse) != 0U) {
+                ApplyScalarWeight(amount, material.translucentWeight,
+                                  material.translucentWeightTexture,
+                                  node, "translucent mix");
+                semanticMix = true;
+            } else if ((foregroundKind & ClosureDiffuse) != 0U &&
+                       (backgroundKind & ClosureTranslucent) != 0U) {
+                if (amount.kind != Value::Kind::Numeric) {
+                    throw std::runtime_error(NodeError(
+                        node, "has a texture-driven inverse translucent mix"));
+                }
+                Value inverseAmount = amount;
+                inverseAmount.number[0] = 1.0F - inverseAmount.number[0];
+                ApplyScalarWeight(inverseAmount, material.translucentWeight,
+                                  material.translucentWeightTexture,
+                                  node, "inverse translucent mix");
+                semanticMix = true;
             }
             if (amount.kind == Value::Kind::Numeric && Near(amount.number[0], 0.0F)) {
                 VisitBsdf(background, layerDepth, topLayer);
@@ -848,8 +871,13 @@ private:
                 // class (for example thin-film on/off); visit both only when
                 // the mix is genuinely dynamic.
             } else if (!semanticMix &&
-                       ((foregroundKind & (ClosureDiffuse | ClosureSubsurface)) != 0U) &&
-                       ((backgroundKind & (ClosureDiffuse | ClosureSubsurface)) != 0U)) {
+                       ((foregroundKind &
+                         (ClosureDiffuse | ClosureSubsurface)) != 0U) &&
+                       ((backgroundKind &
+                         (ClosureDiffuse | ClosureSubsurface)) != 0U)) {
+                // Expanded PBR graphs use this closure switch to select their
+                // thin-walled subsurface approximation. It remains distinct
+                // from MaterialX translucent_bsdf diffuse transmission.
                 material.thinWalled = true;
             } else if (!semanticMix) {
                 throw std::runtime_error(NodeError(
@@ -902,6 +930,8 @@ private:
                 scale(material.transmissionColor, material.transmissionTexture);
                 scale(material.specularColor, material.specularColorTexture);
                 scale(material.coatColor, material.coatColorTexture);
+                scale(material.translucentColor,
+                      material.translucentColorTexture);
                 scale(material.subsurfaceColor, material.subsurfaceColorTexture);
             }
             // A texture-driven BSDF energy compensation term is not yet part
@@ -1027,10 +1057,19 @@ private:
             return;
         }
         if (node.category == "translucent_bsdf") {
-            material.thinWalled = true;
-            if (material.subsurface <= 0.0F) material.subsurface = 1.0F;
-            AssignColor(evaluator.Input(node, "color"), material.subsurfaceColor,
-                        material.subsurfaceColorTexture, node, "translucent color");
+            // A standalone diffuse-transmission primitive has no reflective
+            // diffuse lobe. A following diffuse visit restores that lobe for
+            // the canonical MaterialX diffuse/translucent mix.
+            if (!containsDiffuseClosure) {
+                material.diffuseWeight = 0.0F;
+                material.diffuseWeightTexture.clear();
+            }
+            ApplyScalarWeight(evaluator.InputOr(node, "weight", "float", "1"),
+                              material.translucentWeight,
+                              material.translucentWeightTexture,
+                              node, "translucent weight");
+            AssignColor(evaluator.Input(node, "color"), material.translucentColor,
+                        material.translucentColorTexture, node, "translucent color");
             CaptureNormal(node);
             return;
         }
@@ -1228,6 +1267,27 @@ private:
         target = source.number[0];
     }
 
+    static void ApplyScalarWeight(
+        const Value& source, float& target, std::string& texture,
+        const MaterialXProgramNode& node, std::string_view role)
+    {
+        if (target <= 0.0F && texture.empty()) {
+            AssignScalar(source, target, texture, node, role);
+            return;
+        }
+        if (source.kind == Value::Kind::Numeric) {
+            if (!texture.empty() && !NumericIs(source, 1.0F)) {
+                throw std::runtime_error(NodeError(
+                    node, "combines a texture-driven mix with dynamic " +
+                    std::string(role)));
+            }
+            if (texture.empty()) target *= source.number[0];
+            return;
+        }
+        throw std::runtime_error(NodeError(
+            node, "has multiple texture-driven " + std::string(role) + " terms"));
+    }
+
     static void AssignRoughness(
         const Value& source, float& roughnessU, float& roughnessV,
         std::string& texture, const MaterialXProgramNode& node,
@@ -1277,6 +1337,7 @@ private:
     ProgramEvaluator evaluator;
     SceneMaterial material;
     std::vector<Dielectric> dielectrics;
+    bool containsDiffuseClosure{false};
 };
 
 } // namespace
