@@ -3,8 +3,8 @@
 #include "hdcodex/gpu/vulkan_context.h"
 #include "hdcodex/gpu/vulkan_path_tracer.h"
 
-#include <cmath>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -214,6 +214,63 @@ try {
         }
     }
     scene->lights = authoredLights;
+    tracer.SetScene(scene);
+
+    auto meshLightScene = std::make_shared<hdcodex::SceneSnapshot>();
+    meshLightScene->revision = 2;
+    meshLightScene->meshes = {
+        hdcodex::SceneMesh{
+            .id = "/receiver",
+            .positions = {
+                -1.25F, -1.0F, -3.0F,
+                 1.25F, -1.0F, -3.0F,
+                 0.0F,   1.2F, -3.0F,
+            },
+            .indices = {0, 1, 2},
+            .materialId = "/receiverMaterial",
+        },
+        hdcodex::SceneMesh{
+            .id = "/emitter",
+            .positions = {
+                0.35F, 0.35F, -1.8F,
+                1.10F, 0.35F, -1.8F,
+                0.70F, 1.00F, -1.8F,
+            },
+            .indices = {0, 1, 2},
+            .materialId = "/emitterMaterial",
+        },
+    };
+    meshLightScene->materials = {
+        hdcodex::SceneMaterial{
+            .id = "/receiverMaterial",
+            .baseColor = {0.8F, 0.8F, 0.8F},
+            .roughness = 0.6F,
+        },
+        hdcodex::SceneMaterial{
+            .id = "/emitterMaterial",
+            .baseColor = {0.0F, 0.0F, 0.0F},
+            .emission = {16.0F, 12.0F, 8.0F},
+            .emissionWeight = 1.0F,
+        },
+    };
+    // A zero-energy authored dome disables the renderer's unlit-scene fallback,
+    // so the receiver can only be illuminated by emissive geometry.
+    meshLightScene->lights.push_back({
+        .id = "/blackDome",
+        .type = hdcodex::SceneLightType::Dome,
+        .intensity = 0.0F,
+    });
+    tracer.SetScene(meshLightScene);
+    const auto meshLitPixels = renderSamples(32U);
+    const float meshLitCenter = meshLitPixels[center] +
+        meshLitPixels[center + 1U] + meshLitPixels[center + 2U];
+    meshLightScene->materials[1].emissionWeight = 0.0F;
+    tracer.SetScene(meshLightScene);
+    const auto meshDarkPixels = renderSamples(32U);
+    const float meshDarkCenter = meshDarkPixels[center] +
+        meshDarkPixels[center + 1U] + meshDarkPixels[center + 2U];
+    Check(std::isfinite(meshLitCenter) && meshLitCenter > meshDarkCenter + 0.02F,
+          "emissive geometry was not importance sampled as a mesh light");
     tracer.SetScene(scene);
 
     scene->materials.front().diffuseModel =

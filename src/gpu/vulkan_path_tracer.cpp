@@ -81,6 +81,9 @@ struct GpuLight {
     uvec4 textureInfo;
 };
 layout(std430, set = 0, binding = 10) readonly buffer Lights { GpuLight lights[]; };
+layout(std430, set = 0, binding = 11) readonly buffer EmissiveTriangles {
+    vec4 emissiveTriangles[];
+};
 layout(std140, set = 0, binding = 4) uniform CameraBlock
 {
     vec4 origin;
@@ -521,11 +524,24 @@ vec3 sampleDome(GpuLight light, vec3 worldDirection)
     return light.colorIntensity.rgb * light.colorIntensity.a * textureValue;
 }
 
+uint scenePrimitiveCount()
+{
+    return uint(camera.lowerLeft.w + 0.5);
+}
+
+bool hasEmissiveTriangles()
+{
+    uint primitiveCount = scenePrimitiveCount();
+    return primitiveCount > 0u &&
+        emissiveTriangles[primitiveCount - 1u].x > 0.0;
+}
+
 vec3 environment(vec3 direction)
 {
     vec3 result = vec3(0.0);
     uint lightCount = (camera.frame.w >> 16u) & 0xffu;
     if (lightCount == 0u) {
+        if (hasEmissiveTriangles()) return vec3(0.0);
         vec3 up = camera.vertical.w > 0.5
             ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
         float t = 0.5 * (dot(direction, up) + 1.0);
@@ -651,6 +667,16 @@ vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
     return texture(materialTextures[nonuniformEXT(textureIndex)], uv);
 }
 
+vec3 surfaceEmissionRgb(uint primitive, vec2 uv)
+{
+    GpuMaterial material = materials[triangleMaterials[primitive]];
+    float weight = max(material.transmissionOpacityIor.w, 0.0);
+    return material.textureIndices0.w == 0xffffffffu
+        ? material.emissionRoughness.rgb * weight
+        : sampleMaterialTexture(
+            material.textureIndices0.w, uv, vec4(0.0)).rgb * weight;
+}
+
 vec2 surfaceTextureCoordinates(uint primitive, vec2 barycentrics)
 {
     vec3 barycentric = vec3(1.0 - barycentrics.x - barycentrics.y,
@@ -753,6 +779,48 @@ vec3 shadowVisibility(vec3 origin, vec3 direction, float maximumDistance,
         strength = pow(strength, max(light.shadow.w, 0.0));
     }
     return mix(vec3(1.0), light.shadowColor.rgb, strength);
+}
+
+bool meshLightVisible(vec3 origin, vec3 direction, float maximumDistance)
+{
+    if (maximumDistance <= 0.001) return true;
+    rayQueryEXT shadow;
+    uint rayFlags = gl_RayFlagsTerminateOnFirstHitEXT;
+    if ((camera.frame.w & 0x100u) != 0u) rayFlags |= gl_RayFlagsOpaqueEXT;
+    rayQueryInitializeEXT(shadow, scene, rayFlags,
+        0xff, origin, 0.001, direction, maximumDistance);
+    while (rayQueryProceedEXT(shadow)) {
+        if (rayQueryGetIntersectionTypeEXT(shadow, false) ==
+            gl_RayQueryCandidateIntersectionTriangleEXT) {
+            uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(shadow, false);
+            vec2 barycentrics =
+                rayQueryGetIntersectionBarycentricsEXT(shadow, false);
+            if (surfaceOpacity(primitive, barycentrics) >= 0.5) {
+                rayQueryConfirmIntersectionEXT(shadow);
+            }
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(shadow, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+uint sampleEmissiveTriangle(float target, uint primitiveCount)
+{
+    uint low = 0u;
+    uint high = primitiveCount - 1u;
+    while (low < high) {
+        uint middle = low + (high - low) / 2u;
+        if (target <= emissiveTriangles[middle].x) high = middle;
+        else low = middle + 1u;
+    }
+    return low;
+}
+
+float emissiveTrianglePdf(uint primitive, float distanceSquared,
+                          float emissionCosine)
+{
+    if (emissionCosine <= 0.0) return 0.0;
+    return emissiveTriangles[primitive].y * distanceSquared / emissionCosine;
 }
 
 float eonDirectionalAlbedo(float nDotDirection, float roughness)
@@ -1123,12 +1191,16 @@ void main()
                                 surfaceUv, normal,
                                 p0, p1, p2, uv0, uv1, uv2);
         vec3 tangent = surfaceTangent(normal, p0, p1, p2, uv0, uv1, uv2);
-        vec3 emissionRgb = material.textureIndices0.w == 0xffffffffu
-            ? material.emissionRoughness.rgb
-            : sampleMaterialTexture(material.textureIndices0.w, surfaceUv, vec4(0.0)).rgb *
-                material.transmissionOpacityIor.w;
+        vec3 emissionRgb = surfaceEmissionRgb(primitive, surfaceUv);
         vec3 emission = vec3(illuminantSpectrum(emissionRgb, wavelength));
-        radiance += throughput * emission;
+        float emissionMisWeight = 1.0;
+        if (!previousWasDelta && any(greaterThan(emissionRgb, vec3(0.0)))) {
+            float emissionCosine = abs(dot(geometricNormal, -rayDirection));
+            float lightPdf = emissiveTrianglePdf(
+                primitive, distance * distance, emissionCosine);
+            emissionMisWeight = powerHeuristic(previousBsdfPdf, lightPdf);
+        }
+        radiance += throughput * emission * emissionMisWeight;
 
         float transmission = clamp(material.transmissionOpacityIor.x, 0.0, 1.0);
         vec3 transmissionColorRgb = material.transmissionColorThinWalled.rgb;
@@ -1242,6 +1314,7 @@ void main()
             specularEnergy / max(specularEnergy + diffuseEnergy, 1e-5),
             0.05, 0.95);
         uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+        bool hasMeshLights = hasEmissiveTriangles();
 )glsl"
 R"glsl(
         if (lightCount > 0u) {
@@ -1357,7 +1430,7 @@ R"glsl(
                         misWeight;
                 }
             }
-        } else {
+        } else if (!hasMeshLights) {
             // Default to an oblique 75-degree sun when usdrecord's camera
             // light is disabled and the stage authors no lights of its own.
             bool zUp = camera.vertical.w > 0.5;
@@ -1404,6 +1477,68 @@ R"glsl(
                     max(dot(normal, skyDirection), 1e-4));
             }
         }
+
+        if (hasMeshLights) {
+            uint primitiveCount = scenePrimitiveCount();
+            uint lightPrimitive = sampleEmissiveTriangle(
+                randomFloat(rng), primitiveCount);
+            if (lightPrimitive != primitive &&
+                emissiveTriangles[lightPrimitive].y > 0.0) {
+                float root = sqrt(randomFloat(rng));
+                float second = randomFloat(rng);
+                vec3 barycentric = vec3(
+                    1.0 - root, root * (1.0 - second), root * second);
+                uint lightI0 = indices[lightPrimitive * 3u + 0u];
+                uint lightI1 = indices[lightPrimitive * 3u + 1u];
+                uint lightI2 = indices[lightPrimitive * 3u + 2u];
+                vec3 lightP0 = positions[lightI0].xyz;
+                vec3 lightP1 = positions[lightI1].xyz;
+                vec3 lightP2 = positions[lightI2].xyz;
+                vec3 lightPosition = lightP0 * barycentric.x +
+                    lightP1 * barycentric.y + lightP2 * barycentric.z;
+                vec3 lightNormal = normalize(cross(
+                    lightP1 - lightP0, lightP2 - lightP0));
+                vec3 toLight = lightPosition - hit;
+                float distanceSquared = dot(toLight, toLight);
+                float lightDistance = sqrt(max(distanceSquared, 1e-8));
+                vec3 lightDirection = toLight / lightDistance;
+                float emissionCosine = abs(dot(lightNormal, -lightDirection));
+                float lightPdf = emissiveTrianglePdf(
+                    lightPrimitive, distanceSquared, emissionCosine);
+                if (lightPdf > 0.0) {
+                    vec3 direct = evaluateDirectSurface(
+                        normal, tangent, viewDirection, lightDirection,
+                        diffuseColor, transmission, subsurface,
+                        diffuseWeight, diffuseRoughness, diffuseModel, metalness,
+                        roughness, f0, coat, coatRoughness, coatF0,
+                        sheen, sheenColor, sheenRoughness, sheenZeltner,
+                        1.0, 1.0);
+                    if (any(greaterThan(direct, vec3(0.0))) &&
+                        meshLightVisible(
+                            hit + orientedGeometricNormal * 0.002,
+                            lightDirection,
+                            max(lightDistance - 0.003, 0.001))) {
+                        vec2 lightUv = surfaceTextureCoordinates(
+                            lightPrimitive, barycentric.yz);
+                        vec3 lightEmissionRgb = surfaceEmissionRgb(
+                            lightPrimitive, lightUv);
+                        lightEmissionRgb *= surfaceOpacity(
+                            lightPrimitive, barycentric.yz);
+                        vec3 spectralLight = vec3(illuminantSpectrum(
+                            lightEmissionRgb, wavelength));
+                        float bsdfPdf = surfaceReflectionPdf(
+                            normal, tangent, viewDirection, lightDirection,
+                            roughness, coatRoughness, sheenProbability,
+                            coatProbability, specularProbability);
+                        float misWeight = powerHeuristic(lightPdf, bsdfPdf);
+                        radiance += throughput * direct * spectralLight *
+                            (misWeight / lightPdf);
+                    }
+                }
+            }
+        }
+)glsl"
+R"glsl(
 
         if (randomFloat(rng) < transmission) {
             float eta = frontFace ? 1.0 / ior : ior;
@@ -1518,7 +1653,7 @@ R"glsl(
                 }
             }
         }
-        if (lightCount > 0u) {
+        if (lightCount > 0u || hasMeshLights) {
             previousBsdfPdf = surfaceReflectionPdf(
                 normal, tangent, viewDirection, rayDirection,
                 roughness, coatRoughness, sheenProbability,
@@ -1599,11 +1734,48 @@ struct GpuLight {
 
 static_assert(sizeof(GpuLight) == 14U * 16U);
 
+struct GpuEmissiveTriangle {
+    // CDF, probability per unit area, geometric area, reserved.
+    std::array<float, 4> distribution;
+};
+
+static_assert(sizeof(GpuEmissiveTriangle) == 16U);
+
 float SrgbToLinear(float value)
 {
     return value <= 0.04045F
         ? value / 12.92F
         : std::pow((value + 0.055F) / 1.055F, 2.4F);
+}
+
+float TextureAverageLuminance(const SceneTexture& source)
+{
+    if (source.width == 0U || source.height == 0U ||
+        (source.rgba.empty() && source.rgbaFloat.empty())) {
+        return 0.0F;
+    }
+    const std::size_t pixelCount = static_cast<std::size_t>(source.width) *
+        static_cast<std::size_t>(source.height);
+    if ((!source.rgbaFloat.empty() && source.rgbaFloat.size() < pixelCount * 4U) ||
+        (source.rgbaFloat.empty() && source.rgba.size() < pixelCount * 4U)) {
+        return 0.0F;
+    }
+    double total = 0.0;
+    for (std::size_t pixel = 0U; pixel < pixelCount; ++pixel) {
+        const std::size_t offset = pixel * 4U;
+        std::array<float, 3> rgb{};
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            float value = !source.rgbaFloat.empty()
+                ? source.rgbaFloat[offset + channel]
+                : static_cast<float>(source.rgba[offset + channel]) / 255.0F;
+            if (source.rgbaFloat.empty() && source.srgb) {
+                value = SrgbToLinear(value);
+            }
+            rgb[channel] = std::isfinite(value) ? std::max(value, 0.0F) : 0.0F;
+        }
+        total += 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    }
+    return static_cast<float>(total / static_cast<double>(pixelCount));
 }
 
 SceneTexture BuildLatLongImportanceTexture(const SceneTexture& source)
@@ -2058,8 +2230,10 @@ public:
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             VkDescriptorSetLayoutBinding{10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                 VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         };
-        std::array<VkDescriptorBindingFlags, 11> bindingFlags{};
+        std::array<VkDescriptorBindingFlags, 12> bindingFlags{};
         bindingFlags[8] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
         const VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -2076,7 +2250,7 @@ public:
               "vkCreateDescriptorSetLayout");
         const std::array poolSizes = {
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
             VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                  kMaxMaterialTextures},
@@ -2107,7 +2281,7 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v16." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v17." + modeName;
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v10." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
@@ -2183,9 +2357,11 @@ public:
         DestroyBuffer(texcoordBuffer);
         DestroyBuffer(normalBuffer);
         DestroyBuffer(lightBuffer);
+        DestroyBuffer(emissiveTriangleBuffer);
         for (Texture& texture : textures) DestroyTexture(texture);
         textures.clear();
         lightCount = 0U;
+        primitiveCount = 0U;
         geometryReady = false;
     }
 
@@ -2224,6 +2400,7 @@ public:
         std::vector<GpuTexcoord> texcoords;
         std::vector<GpuNormal> normals;
         std::vector<GpuMaterial> materials;
+        std::vector<float> materialEmissionPowers;
         std::vector<GpuLight> lights;
         std::map<std::string, std::uint32_t, std::less<>> textureIndices;
         std::map<std::string, const SceneTexture*, std::less<>> textureSources;
@@ -2261,6 +2438,28 @@ public:
         const auto textureIndex = [&textureIndices](const std::string& id) {
             const auto found = textureIndices.find(id);
             return found == textureIndices.end() ? kMissingTexture : found->second;
+        };
+        std::map<std::string, float, std::less<>> textureLuminanceCache;
+        const auto textureAverageLuminance = [&](const std::string& id) {
+            const auto cached = textureLuminanceCache.find(id);
+            if (cached != textureLuminanceCache.end()) return cached->second;
+            double total = 0.0;
+            std::size_t count = 0U;
+            if (const auto source = textureSources.find(id);
+                source != textureSources.end()) {
+                total = TextureAverageLuminance(*source->second);
+                count = 1U;
+            } else if (const auto tiles = udimSets.find(id);
+                       tiles != udimSets.end()) {
+                for (const SceneTexture* tile : tiles->second) {
+                    total += TextureAverageLuminance(*tile);
+                    ++count;
+                }
+            }
+            const float result = count > 0U
+                ? static_cast<float>(total / static_cast<double>(count)) : 0.0F;
+            textureLuminanceCache.emplace(id, result);
+            return result;
         };
         std::map<std::string, std::uint32_t, std::less<>> domeImportanceIndices;
         const auto domeImportanceIndex = [&](const SceneLight& light) {
@@ -2356,6 +2555,7 @@ public:
             };
         };
         materials.push_back(defaultMaterial({0.8F, 0.8F, 0.8F}));
+        materialEmissionPowers.push_back(0.0F);
         std::map<std::string, std::uint32_t, std::less<>> materialIndices;
         for (const SceneMaterial& material : snapshot->materials) {
             const std::uint32_t index = static_cast<std::uint32_t>(materials.size());
@@ -2415,6 +2615,13 @@ public:
                  textureIndex(material.diffuseRoughnessTexture),
                  textureIndex(material.diffuseWeightTexture)},
             });
+            const float emissionLuminance = material.emissionTexture.empty()
+                ? 0.2126F * std::max(material.emission[0], 0.0F) +
+                    0.7152F * std::max(material.emission[1], 0.0F) +
+                    0.0722F * std::max(material.emission[2], 0.0F)
+                : textureAverageLuminance(material.emissionTexture);
+            materialEmissionPowers.push_back(
+                std::max(material.emissionWeight, 0.0F) * emissionLuminance);
         }
         std::map<std::array<float, 3>, std::uint32_t> displayColorMaterials;
         for (const SceneMesh& mesh : snapshot->meshes) {
@@ -2439,6 +2646,7 @@ public:
                     materialIndex = static_cast<std::uint32_t>(materials.size());
                     displayColorMaterials.emplace(color, materialIndex);
                     materials.push_back(defaultMaterial(color));
+                    materialEmissionPowers.push_back(0.0F);
                 }
             }
             for (std::size_t triangle = 0; triangle + 2 < mesh.indices.size(); triangle += 3) {
@@ -2475,6 +2683,58 @@ public:
             }
         }
         if (vertices.empty() || indices.empty()) return;
+        primitiveCount = static_cast<std::uint32_t>(triangleMaterials.size());
+
+        std::vector<GpuEmissiveTriangle> emissiveTriangles(
+            triangleMaterials.size());
+        std::vector<double> emissiveWeights(triangleMaterials.size(), 0.0);
+        std::vector<float> triangleAreas(triangleMaterials.size(), 0.0F);
+        double totalEmissiveWeight = 0.0;
+        for (std::size_t primitive = 0U;
+             primitive < triangleMaterials.size(); ++primitive) {
+            const GpuVertex& p0 = vertices[indices[primitive * 3U]];
+            const GpuVertex& p1 = vertices[indices[primitive * 3U + 1U]];
+            const GpuVertex& p2 = vertices[indices[primitive * 3U + 2U]];
+            const double edge1X = static_cast<double>(p1.x) - p0.x;
+            const double edge1Y = static_cast<double>(p1.y) - p0.y;
+            const double edge1Z = static_cast<double>(p1.z) - p0.z;
+            const double edge2X = static_cast<double>(p2.x) - p0.x;
+            const double edge2Y = static_cast<double>(p2.y) - p0.y;
+            const double edge2Z = static_cast<double>(p2.z) - p0.z;
+            const double crossX = edge1Y * edge2Z - edge1Z * edge2Y;
+            const double crossY = edge1Z * edge2X - edge1X * edge2Z;
+            const double crossZ = edge1X * edge2Y - edge1Y * edge2X;
+            const float area = static_cast<float>(0.5 * std::sqrt(
+                crossX * crossX + crossY * crossY + crossZ * crossZ));
+            triangleAreas[primitive] = std::isfinite(area) ? area : 0.0F;
+            const std::uint32_t materialIndex = triangleMaterials[primitive];
+            const float power = materialIndex < materialEmissionPowers.size()
+                ? materialEmissionPowers[materialIndex] : 0.0F;
+            const double weight = static_cast<double>(triangleAreas[primitive]) *
+                static_cast<double>(power);
+            if (weight > 0.0 && std::isfinite(weight)) {
+                emissiveWeights[primitive] = weight;
+                totalEmissiveWeight += weight;
+            }
+        }
+        if (totalEmissiveWeight > 0.0 && std::isfinite(totalEmissiveWeight)) {
+            double cdf = 0.0;
+            for (std::size_t primitive = 0U;
+                 primitive < emissiveTriangles.size(); ++primitive) {
+                const double probability =
+                    emissiveWeights[primitive] / totalEmissiveWeight;
+                cdf += probability;
+                const float area = triangleAreas[primitive];
+                emissiveTriangles[primitive].distribution = {
+                    static_cast<float>(primitive + 1U == emissiveTriangles.size()
+                        ? 1.0 : cdf),
+                    area > 0.0F
+                        ? static_cast<float>(probability) / area : 0.0F,
+                    area,
+                    0.0F,
+                };
+            }
+        }
 
         const VkBufferUsageFlags inputUsage =
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
@@ -2507,6 +2767,11 @@ public:
         lightBuffer = CreateDeviceBufferWithData(lights.data(),
             lights.size() * sizeof(GpuLight), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             false, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        emissiveTriangleBuffer = CreateDeviceBufferWithData(
+            emissiveTriangles.data(),
+            emissiveTriangles.size() * sizeof(GpuEmissiveTriangle),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
         VkAccelerationStructureGeometryKHR geometry{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -2521,7 +2786,8 @@ public:
             .indexType = VK_INDEX_TYPE_UINT32,
             .indexData = {.deviceAddress = Address(indexBuffer)},
         };
-        const std::uint32_t primitiveCount = static_cast<std::uint32_t>(indices.size() / 3U);
+        const std::uint32_t buildPrimitiveCount =
+            static_cast<std::uint32_t>(indices.size() / 3U);
         VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
         buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -2532,7 +2798,7 @@ public:
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
         vkGetAccelerationStructureBuildSizesKHR(device,
             VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-            &buildInfo, &primitiveCount, &sizes);
+            &buildInfo, &buildPrimitiveCount, &sizes);
         blas = CreateAcceleration(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                                   sizes.accelerationStructureSize, blasStorage);
         Buffer scratch = CreateBuffer(sizes.buildScratchSize,
@@ -2542,7 +2808,7 @@ public:
         buildInfo.dstAccelerationStructure = blas;
         buildInfo.scratchData.deviceAddress = Address(scratch);
         const VkAccelerationStructureBuildRangeInfoKHR range{
-            .primitiveCount = primitiveCount,
+            .primitiveCount = buildPrimitiveCount,
         };
         const VkAccelerationStructureBuildRangeInfoKHR* rangePointer = &range;
         Submit([&](VkCommandBuffer command) {
@@ -2658,7 +2924,9 @@ public:
             normalBuffer.handle, 0, normalBuffer.size};
         const VkDescriptorBufferInfo lightInfo{
             lightBuffer.handle, 0, lightBuffer.size};
-        std::array<VkWriteDescriptorSet, 11> writes{};
+        const VkDescriptorBufferInfo emissiveTriangleInfo{
+            emissiveTriangleBuffer.handle, 0, emissiveTriangleBuffer.size};
+        std::array<VkWriteDescriptorSet, 12> writes{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, &accelerationWrite,
             descriptorSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, nullptr, nullptr, nullptr};
         const std::array infos = {&outputInfo, &vertexInfo, &indexInfo};
@@ -2679,6 +2947,9 @@ public:
             9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &normalInfo, nullptr};
         writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
             10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &lightInfo, nullptr};
+        writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            11, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr,
+            &emissiveTriangleInfo, nullptr};
 
         std::vector<VkDescriptorImageInfo> imageInfos;
         imageInfos.reserve(textures.size());
@@ -2689,12 +2960,12 @@ public:
                 .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             });
         }
-        std::uint32_t writeCount = 10;
+        std::uint32_t writeCount = 11;
         if (!imageInfos.empty()) {
-            writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            writes[11] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
                 8, 0, static_cast<std::uint32_t>(imageInfos.size()),
                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos.data(), nullptr, nullptr};
-            writeCount = 11;
+            writeCount = 12;
         }
         vkUpdateDescriptorSets(device, writeCount,
                                writes.data(), 0, nullptr);
@@ -2715,7 +2986,8 @@ public:
         CameraUniform data{
             {camera.origin[0], camera.origin[1], camera.origin[2],
              static_cast<float>(std::max(sampleCount, 1U))},
-            {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2], 0.0F},
+            {camera.lowerLeft[0], camera.lowerLeft[1], camera.lowerLeft[2],
+             static_cast<float>(primitiveCount)},
             {camera.horizontal[0], camera.horizontal[1], camera.horizontal[2], 0.0F},
             {camera.vertical[0], camera.vertical[1], camera.vertical[2],
              fallbackZUp ? 1.0F : 0.0F},
@@ -2803,6 +3075,7 @@ public:
     Buffer texcoordBuffer;
     Buffer normalBuffer;
     Buffer lightBuffer;
+    Buffer emissiveTriangleBuffer;
     Buffer blasStorage;
     Buffer tlasStorage;
     VkAccelerationStructureKHR blas{VK_NULL_HANDLE};
@@ -2813,6 +3086,7 @@ public:
     bool fallbackAxisInitialized{false};
     bool fallbackZUp{false};
     std::uint32_t lightCount{0U};
+    std::uint32_t primitiveCount{0U};
 };
 
 VulkanPathTracer::VulkanPathTracer(VulkanContext& context, ShaderCache& cache)

@@ -97,6 +97,8 @@ asset-input and display-output format, not the path-throughput representation.
 - Geometry-aware disk, sphere, and cylinder area sampling plus angular-diameter
   distant-light sampling; distant angle changes shadow softness without
   changing authored energy.
+- Power-weighted emissive-triangle sampling with texture-aware radiance,
+  area-to-solid-angle PDFs, visibility, and BSDF-hit MIS.
 - Stable world-space fallback sky plus a shadow-casting sun at 75° elevation
   when the stage has no supported authored lights. The fallback selects Y-up or
   Z-up once and does not rotate with the camera.

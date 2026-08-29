@@ -94,6 +94,14 @@ volume/area-preserving scalar approximation. Distant lights sample the authored
 angular-diameter cone as an integrated directional source, so increasing angle
 softens shadows without reducing emitted energy.
 
+Surface EDFs also form a scene-wide emissive-triangle distribution weighted by
+triangle area and average emitted luminance. Next-event samples evaluate the
+exact emission texture and opacity at the sampled barycentrics, convert the
+area density to solid angle, trace visibility, and use power-heuristic MIS with
+the matching non-delta BSDF PDF. BSDF paths that hit those triangles apply the
+reciprocal MIS weight. Emissive geometry counts as authored lighting, so it
+suppresses the otherwise-unlit fallback sky and sun.
+
 If the stage contains no supported authored lights, the shader falls back to a
 neutral analytic sky and a shadow-casting sun at 75° elevation with an oblique
 azimuth. This keeps `usdrecord --disableCameraLight` useful for unlit assets
