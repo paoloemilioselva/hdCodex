@@ -149,6 +149,8 @@ See [Architecture](docs/architecture.md) for implementation boundaries,
 [Building](docs/building.md) for dependency setup,
 [Shading development](docs/shading_development.md) for MaterialX decisions and
 the live shading capability audit,
+[Neural rendering plan](docs/neural-rendering-plan.md) for GPU-frame, temporal
+reconstruction, and optional DLSS integration milestones,
 [Subdivision plan](docs/subdivision-plan.md) for planned OpenSubdiv integration,
 and [Gallery](gallery.md) for versioned reference renders and timings.
 

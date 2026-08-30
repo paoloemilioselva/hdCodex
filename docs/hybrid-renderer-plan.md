@@ -1,5 +1,11 @@
 # Hybrid renderer plan
 
+Temporal reconstruction, guide buffers, GPU-frame ownership, and optional
+NVIDIA integration are tracked separately in the
+[neural rendering and DLSS roadmap](neural-rendering-plan.md). Shared work such
+as reusable BLAS/TLAS objects, stable IDs, motion, and GPU material evaluation
+must satisfy both plans rather than being implemented twice.
+
 ## Decision
 
 Keep the current spectral Vulkan path tracer as the production reference and do
