@@ -6,6 +6,8 @@
 #include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/meshTopology.h"
 
+#include <cstddef>
+#include <memory>
 #include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -18,6 +20,46 @@ struct HdCodexRefinedMeshGeometry {
     VtIntArray texcoordIndices;
     HdInterpolation texcoordInterpolation{HdInterpolationConstant};
     VtIntArray coarseFaceIndices;
+};
+
+struct HdCodexSubdivisionCacheData;
+
+// Owns topology-dependent OpenSubdiv refinement and interpolation tables.
+// Reusing this object lets animated points and primvar values be evaluated
+// without rebuilding topology or stencil weights.
+class HdCodexSubdivisionCache {
+public:
+    HdCodexSubdivisionCache();
+    ~HdCodexSubdivisionCache();
+    HdCodexSubdivisionCache(HdCodexSubdivisionCache&&) noexcept;
+    HdCodexSubdivisionCache& operator=(HdCodexSubdivisionCache&&) noexcept;
+
+    HdCodexSubdivisionCache(const HdCodexSubdivisionCache&) = delete;
+    HdCodexSubdivisionCache& operator=(const HdCodexSubdivisionCache&) = delete;
+
+    void Reset();
+    [[nodiscard]] std::size_t GetBuildCount() const noexcept;
+
+private:
+    std::unique_ptr<HdCodexSubdivisionCacheData> _data;
+    std::size_t _buildCount{0};
+
+    friend bool HdCodexRefineMesh(
+        const HdMeshTopology&,
+        const VtVec3fArray&,
+        const VtVec2fArray&,
+        const VtIntArray&,
+        HdInterpolation,
+        int,
+        HdCodexRefinedMeshGeometry*,
+        std::string*,
+        HdCodexSubdivisionCache*);
+    friend bool HdCodexBuildSubdivisionCache(
+        const HdMeshTopology&,
+        const VtIntArray&,
+        int,
+        HdCodexSubdivisionCache*,
+        std::string*);
 };
 
 // Uniformly refines a subdivision mesh and its primary texture-coordinate
@@ -33,6 +75,7 @@ bool HdCodexRefineMesh(
     HdInterpolation texcoordInterpolation,
     int refinementLevel,
     HdCodexRefinedMeshGeometry* result,
-    std::string* error);
+    std::string* error,
+    HdCodexSubdivisionCache* cache = nullptr);
 
 PXR_NAMESPACE_CLOSE_SCOPE

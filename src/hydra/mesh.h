@@ -1,6 +1,7 @@
 #pragma once
 
 #include "api.h"
+#include "subdivision.h"
 
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/base/gf/matrix4d.h"
@@ -38,6 +39,7 @@ private:
     VtVec3fArray _normals;
     VtIntArray _normalIndices;
     HdInterpolation _normalInterpolation{HdInterpolationConstant};
+    HdCodexSubdivisionCache _subdivisionCache;
     GfVec3f _displayColor{0.5F};
     GfMatrix4d _transform{1.0};
     bool _visible{true};

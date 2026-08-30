@@ -2,7 +2,6 @@
 
 #include "instancer.h"
 #include "render_param.h"
-#include "subdivision.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
@@ -503,7 +502,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 if (HdCodexRefineMesh(
                     topology, points, texcoords, texcoordIndices,
                     texcoordInterpolation, refinementLevel,
-                    &refined, &subdivisionError)) {
+                    &refined, &subdivisionError, &_subdivisionCache)) {
                     topology = std::move(refined.topology);
                     points = std::move(refined.points);
                     texcoords = std::move(refined.texcoords);

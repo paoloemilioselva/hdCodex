@@ -125,7 +125,9 @@ asset-input and display-output format, not the path-throughput representation.
 - Catmull-Clark, Loop, and bilinear meshes are uniformly refined to an
   OpenSubdiv limit-surface approximation. `enableSubdivision` provides a
   coarse-cage toggle and `subdivisionLevel` selects a bounded level from 0 to 8;
-  both settings rebuild affected mesh geometry when changed.
+  both settings rebuild affected mesh geometry when changed. Topology and
+  interpolation stencils are cached so point-only deformation only reevaluates
+  refined values.
 - Static scene and accumulation data use device-local buffers; staging resources,
   command buffers, fences, descriptor sets, and shader-cache entries are reused.
 - The checked-in 512 px Gold shader-ball benchmark dropped from 16.61 s to about

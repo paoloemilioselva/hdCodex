@@ -259,6 +259,70 @@ void TestHoleRemoval()
     }
 }
 
+void TestCachedAnimatedValues()
+{
+    VtVec2fArray coordinates;
+    VtIntArray indices;
+    for (int face = 0; face < 6; ++face) {
+        coordinates.push_back({0.0F, 0.0F});
+        coordinates.push_back({1.0F, 0.0F});
+        coordinates.push_back({1.0F, 1.0F});
+        coordinates.push_back({0.0F, 1.0F});
+        const int base = face * 4;
+        indices.push_back(base);
+        indices.push_back(base + 1);
+        indices.push_back(base + 2);
+        indices.push_back(base + 3);
+    }
+
+    HdCodexSubdivisionCache cache;
+    HdCodexRefinedMeshGeometry first;
+    std::string error;
+    Check(HdCodexRefineMesh(
+        CubeTopology(), CubePoints(), coordinates, indices,
+        HdInterpolationFaceVarying, 2, &first, &error, &cache),
+        error.c_str());
+    Check(cache.GetBuildCount() == 1,
+          "initial subdivision evaluation must build one cache entry");
+
+    VtVec3fArray animatedPoints = CubePoints();
+    animatedPoints[0][0] = -2.0F;
+    VtVec2fArray animatedCoordinates = coordinates;
+    animatedCoordinates[0][0] = 0.25F;
+    HdCodexRefinedMeshGeometry animated;
+    Check(HdCodexRefineMesh(
+        CubeTopology(), animatedPoints, animatedCoordinates, indices,
+        HdInterpolationFaceVarying, 2, &animated, &error, &cache),
+        error.c_str());
+    Check(cache.GetBuildCount() == 1,
+          "point and primvar animation rebuilt cached topology");
+    Check(animated.topology == first.topology,
+          "animated values changed refined topology");
+
+    bool pointsChanged = false;
+    for (std::size_t index = 0; index < first.points.size(); ++index) {
+        pointsChanged = pointsChanged ||
+            first.points[index] != animated.points[index];
+    }
+    Check(pointsChanged, "animated control points did not update limit positions");
+    bool texcoordsChanged = false;
+    for (std::size_t index = 0; index < first.texcoords.size(); ++index) {
+        texcoordsChanged = texcoordsChanged ||
+            first.texcoords[index] != animated.texcoords[index];
+    }
+    Check(texcoordsChanged,
+          "animated face-varying values did not update refined values");
+
+    std::swap(indices[0], indices[1]);
+    HdCodexRefinedMeshGeometry changedTopology;
+    Check(HdCodexRefineMesh(
+        CubeTopology(), animatedPoints, animatedCoordinates, indices,
+        HdInterpolationFaceVarying, 2, &changedTopology, &error, &cache),
+        error.c_str());
+    Check(cache.GetBuildCount() == 2,
+          "face-varying topology change did not rebuild the cache");
+}
+
 } // namespace
 
 int main()
@@ -270,6 +334,7 @@ int main()
     TestUniformCoordinatesFollowCoarseFaces();
     TestCreasesAndCorners();
     TestHoleRemoval();
+    TestCachedAnimatedValues();
     std::cout << "subdivision tests passed\n";
     return EXIT_SUCCESS;
 }

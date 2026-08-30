@@ -4,6 +4,8 @@
 #include "pxr/imaging/pxOsd/tokens.h"
 
 #include <opensubdiv/far/primvarRefiner.h>
+#include <opensubdiv/far/stencilTable.h>
+#include <opensubdiv/far/stencilTableFactory.h>
 #include <opensubdiv/far/topologyLevel.h>
 #include <opensubdiv/far/topologyRefiner.h>
 
@@ -15,6 +17,37 @@
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+struct HdCodexSubdivisionCacheData {
+    HdMeshTopology sourceTopology;
+    VtIntArray faceVaryingTopology;
+    int refinementLevel{0};
+    PxOsdTopologyRefinerSharedPtr refiner;
+    std::unique_ptr<const OpenSubdiv::Far::StencilTable> vertexStencils;
+    std::unique_ptr<const OpenSubdiv::Far::StencilTable> varyingStencils;
+    std::unique_ptr<const OpenSubdiv::Far::StencilTable> faceVaryingStencils;
+    HdMeshTopology refinedTopology;
+    VtIntArray coarseFaceIndices;
+    VtIntArray refinedFaceVaryingIndices;
+};
+
+HdCodexSubdivisionCache::HdCodexSubdivisionCache() = default;
+HdCodexSubdivisionCache::~HdCodexSubdivisionCache() = default;
+HdCodexSubdivisionCache::HdCodexSubdivisionCache(
+    HdCodexSubdivisionCache&&) noexcept = default;
+HdCodexSubdivisionCache& HdCodexSubdivisionCache::operator=(
+    HdCodexSubdivisionCache&&) noexcept = default;
+
+void HdCodexSubdivisionCache::Reset()
+{
+    _data.reset();
+}
+
+std::size_t HdCodexSubdivisionCache::GetBuildCount() const noexcept
+{
+    return _buildCount;
+}
+
 namespace {
 
 template <std::size_t Size>
@@ -138,40 +171,23 @@ LimitSurfaceValues EvaluateLimitSurface(
 }
 
 template <typename Weighted>
-std::vector<Weighted> RefineVertexValues(
-    const OpenSubdiv::Far::TopologyRefiner& refiner,
-    const std::vector<Weighted>& source,
-    int refinementLevel,
-    HdInterpolation interpolation)
+std::vector<Weighted> ApplyStencils(
+    const OpenSubdiv::Far::StencilTable& stencils,
+    const std::vector<Weighted>& source)
 {
-    OpenSubdiv::Far::PrimvarRefiner primvarRefiner(refiner);
-    std::vector<Weighted> current = source;
-    for (int level = 1; level <= refinementLevel; ++level) {
-        std::vector<Weighted> next(static_cast<std::size_t>(
-            refiner.GetLevel(level).GetNumVertices()));
-        if (interpolation == HdInterpolationVarying) {
-            primvarRefiner.InterpolateVarying(level, current, next);
-        } else {
-            primvarRefiner.Interpolate(level, current, next);
-        }
-        current = std::move(next);
-    }
-    return current;
+    std::vector<Weighted> result(
+        static_cast<std::size_t>(stencils.GetNumStencils()));
+    stencils.UpdateValues(source, result);
+    return result;
 }
 
 std::vector<WeightedVec2> RefineFaceVaryingValues(
     const OpenSubdiv::Far::TopologyRefiner& refiner,
-    const std::vector<WeightedVec2>& source,
-    int refinementLevel)
+    const OpenSubdiv::Far::StencilTable& stencils,
+    const std::vector<WeightedVec2>& source)
 {
     OpenSubdiv::Far::PrimvarRefiner primvarRefiner(refiner);
-    std::vector<WeightedVec2> current = source;
-    for (int level = 1; level <= refinementLevel; ++level) {
-        std::vector<WeightedVec2> next(static_cast<std::size_t>(
-            refiner.GetLevel(level).GetNumFVarValues(0)));
-        primvarRefiner.InterpolateFaceVarying(level, current, next, 0);
-        current = std::move(next);
-    }
+    std::vector<WeightedVec2> current = ApplyStencils(stencils, source);
     std::vector<WeightedVec2> limit(current.size());
     primvarRefiner.LimitFaceVarying(current, limit, 0);
     return limit;
@@ -189,7 +205,120 @@ int FindCoarseFace(
     return face;
 }
 
+std::unique_ptr<const OpenSubdiv::Far::StencilTable> CreateStencilTable(
+    const OpenSubdiv::Far::TopologyRefiner& refiner,
+    OpenSubdiv::Far::StencilTableFactory::Mode mode,
+    int refinementLevel)
+{
+    OpenSubdiv::Far::StencilTableFactory::Options options;
+    options.interpolationMode = mode;
+    options.generateControlVerts = false;
+    options.generateIntermediateLevels = false;
+    options.factorizeIntermediateLevels = true;
+    options.maxLevel = static_cast<unsigned int>(refinementLevel);
+    options.fvarChannel = 0;
+    return std::unique_ptr<const OpenSubdiv::Far::StencilTable>(
+        OpenSubdiv::Far::StencilTableFactory::Create(refiner, options));
+}
+
+bool CacheMatches(
+    const HdCodexSubdivisionCacheData& data,
+    const HdMeshTopology& topology,
+    const VtIntArray& faceVaryingTopology,
+    int refinementLevel)
+{
+    return data.refinementLevel == refinementLevel &&
+        data.sourceTopology == topology &&
+        data.faceVaryingTopology == faceVaryingTopology;
+}
+
 } // namespace
+
+bool HdCodexBuildSubdivisionCache(
+    const HdMeshTopology& topology,
+    const VtIntArray& faceVaryingTopology,
+    int refinementLevel,
+    HdCodexSubdivisionCache* cache,
+    std::string* error)
+{
+    if (!cache) return Fail(error, "subdivision cache is null");
+
+    std::vector<VtIntArray> faceVaryingTopologies;
+    if (!faceVaryingTopology.empty()) {
+        faceVaryingTopologies.push_back(faceVaryingTopology);
+    }
+    PxOsdTopologyRefinerSharedPtr refiner = faceVaryingTopologies.empty()
+        ? PxOsdRefinerFactory::Create(topology.GetPxOsdMeshTopology())
+        : PxOsdRefinerFactory::Create(
+            topology.GetPxOsdMeshTopology(), faceVaryingTopologies);
+    if (!refiner) return Fail(error, "OpenSubdiv rejected the mesh topology");
+
+    OpenSubdiv::Far::TopologyRefiner::UniformOptions options(refinementLevel);
+    options.fullTopologyInLastLevel = true;
+    refiner->RefineUniform(options);
+
+    auto data = std::make_unique<HdCodexSubdivisionCacheData>();
+    data->sourceTopology = topology;
+    data->faceVaryingTopology = faceVaryingTopology;
+    data->refinementLevel = refinementLevel;
+    data->refiner = std::move(refiner);
+    data->vertexStencils = CreateStencilTable(
+        *data->refiner,
+        OpenSubdiv::Far::StencilTableFactory::INTERPOLATE_VERTEX,
+        refinementLevel);
+    data->varyingStencils = CreateStencilTable(
+        *data->refiner,
+        OpenSubdiv::Far::StencilTableFactory::INTERPOLATE_VARYING,
+        refinementLevel);
+    if (!faceVaryingTopology.empty()) {
+        data->faceVaryingStencils = CreateStencilTable(
+            *data->refiner,
+            OpenSubdiv::Far::StencilTableFactory::INTERPOLATE_FACE_VARYING,
+            refinementLevel);
+    }
+    if (!data->vertexStencils || !data->varyingStencils ||
+        (!faceVaryingTopology.empty() && !data->faceVaryingStencils)) {
+        return Fail(error, "OpenSubdiv could not build interpolation stencils");
+    }
+
+    const OpenSubdiv::Far::TopologyLevel& finalLevel =
+        data->refiner->GetLevel(refinementLevel);
+    VtIntArray faceCounts;
+    VtIntArray faceIndices;
+    for (int face = 0; face < finalLevel.GetNumFaces(); ++face) {
+        if (finalLevel.IsFaceHole(face)) continue;
+        const OpenSubdiv::Far::ConstIndexArray vertices =
+            finalLevel.GetFaceVertices(face);
+        if (vertices.size() < 3) continue;
+        const int coarseFace = FindCoarseFace(
+            *data->refiner, refinementLevel, face);
+        if (coarseFace < 0) {
+            return Fail(error, "failed to map a refined face to its coarse face");
+        }
+        faceCounts.push_back(vertices.size());
+        data->coarseFaceIndices.push_back(coarseFace);
+        for (int corner = 0; corner < vertices.size(); ++corner) {
+            faceIndices.push_back(vertices[corner]);
+        }
+        if (!faceVaryingTopology.empty()) {
+            const OpenSubdiv::Far::ConstIndexArray values =
+                finalLevel.GetFaceFVarValues(face, 0);
+            if (values.size() != vertices.size()) {
+                return Fail(error, "refined texture topology is inconsistent");
+            }
+            for (int corner = 0; corner < values.size(); ++corner) {
+                data->refinedFaceVaryingIndices.push_back(values[corner]);
+            }
+        }
+    }
+    data->refinedTopology = HdMeshTopology(
+        PxOsdOpenSubdivTokens->none,
+        topology.GetOrientation(), faceCounts, faceIndices, 0);
+
+    cache->_data = std::move(data);
+    ++cache->_buildCount;
+    return true;
+}
 
 bool HdCodexRefineMesh(
     const HdMeshTopology& topology,
@@ -199,7 +328,8 @@ bool HdCodexRefineMesh(
     HdInterpolation texcoordInterpolation,
     int refinementLevel,
     HdCodexRefinedMeshGeometry* result,
-    std::string* error)
+    std::string* error,
+    HdCodexSubdivisionCache* cache)
 {
     if (!result) return Fail(error, "subdivision output is null");
     *result = {};
@@ -229,16 +359,16 @@ bool HdCodexRefineMesh(
     }
 
     VtVec2fArray faceVaryingTexcoords;
-    std::vector<VtIntArray> faceVaryingTopologies;
+    VtIntArray faceVaryingTopology;
     if (!texcoords.empty() && texcoordInterpolation == HdInterpolationFaceVarying) {
-        VtIntArray topologyIndices;
         if (texcoordIndices.empty()) {
             if (texcoords.size() != cornerCount) {
                 return Fail(error,
                     "face-varying texture coordinates do not match face corners");
             }
-            topologyIndices.resize(cornerCount);
-            std::iota(topologyIndices.begin(), topologyIndices.end(), 0);
+            faceVaryingTopology.resize(cornerCount);
+            std::iota(
+                faceVaryingTopology.begin(), faceVaryingTopology.end(), 0);
         } else {
             if (texcoordIndices.size() != cornerCount) {
                 return Fail(error,
@@ -251,37 +381,40 @@ bool HdCodexRefineMesh(
                         "face-varying texture index is outside the value array");
                 }
             }
-            topologyIndices = texcoordIndices;
+            faceVaryingTopology = texcoordIndices;
         }
         faceVaryingTexcoords = texcoords;
-        faceVaryingTopologies.push_back(std::move(topologyIndices));
     }
 
-    PxOsdTopologyRefinerSharedPtr refiner = faceVaryingTopologies.empty()
-        ? PxOsdRefinerFactory::Create(topology.GetPxOsdMeshTopology())
-        : PxOsdRefinerFactory::Create(
-            topology.GetPxOsdMeshTopology(), faceVaryingTopologies);
-    if (!refiner) return Fail(error, "OpenSubdiv rejected the mesh topology");
+    HdCodexSubdivisionCache temporaryCache;
+    HdCodexSubdivisionCache* activeCache = cache ? cache : &temporaryCache;
+    if (!activeCache->_data || !CacheMatches(
+            *activeCache->_data, topology, faceVaryingTopology,
+            refinementLevel)) {
+        if (!HdCodexBuildSubdivisionCache(
+                topology, faceVaryingTopology, refinementLevel,
+                activeCache, error)) {
+            return false;
+        }
+    }
+    const HdCodexSubdivisionCacheData& data = *activeCache->_data;
 
-    OpenSubdiv::Far::TopologyRefiner::UniformOptions options(refinementLevel);
-    options.fullTopologyInLastLevel = true;
-    refiner->RefineUniform(options);
-
-    const std::vector<WeightedVec3> refinedPositions = RefineVertexValues(
-        *refiner, ToWeighted<WeightedVec3>(points), refinementLevel,
-        HdInterpolationVertex);
+    const std::vector<WeightedVec3> refinedPositions = ApplyStencils(
+        *data.vertexStencils, ToWeighted<WeightedVec3>(points));
     LimitSurfaceValues limitSurface =
-        EvaluateLimitSurface(*refiner, refinedPositions);
+        EvaluateLimitSurface(*data.refiner, refinedPositions);
     result->points = FromWeightedVec3(limitSurface.positions);
     result->normals = std::move(limitSurface.normals);
+    result->topology = data.refinedTopology;
+    result->coarseFaceIndices = data.coarseFaceIndices;
 
     std::vector<WeightedVec2> refinedTexcoords;
     if (!texcoords.empty()) {
         switch (texcoordInterpolation) {
         case HdInterpolationFaceVarying:
             refinedTexcoords = RefineFaceVaryingValues(
-                *refiner, ToWeighted<WeightedVec2>(faceVaryingTexcoords),
-                refinementLevel);
+                *data.refiner, *data.faceVaryingStencils,
+                ToWeighted<WeightedVec2>(faceVaryingTexcoords));
             break;
         case HdInterpolationVertex:
         case HdInterpolationVarying: {
@@ -291,9 +424,11 @@ bool HdCodexRefineMesh(
                 return Fail(error,
                     "vertex texture coordinates do not match the point count");
             }
-            refinedTexcoords = RefineVertexValues(
-                *refiner, ToWeighted<WeightedVec2>(flattened), refinementLevel,
-                texcoordInterpolation);
+            const OpenSubdiv::Far::StencilTable& stencils =
+                texcoordInterpolation == HdInterpolationVarying
+                ? *data.varyingStencils : *data.vertexStencils;
+            refinedTexcoords = ApplyStencils(
+                stencils, ToWeighted<WeightedVec2>(flattened));
             break;
         }
         case HdInterpolationUniform:
@@ -304,49 +439,22 @@ bool HdCodexRefineMesh(
         }
     }
 
-    const OpenSubdiv::Far::TopologyLevel& finalLevel =
-        refiner->GetLevel(refinementLevel);
-    VtIntArray faceCounts;
-    VtIntArray faceIndices;
     VtVec2fArray finalFaceVaryingTexcoords;
-    for (int face = 0; face < finalLevel.GetNumFaces(); ++face) {
-        if (finalLevel.IsFaceHole(face)) continue;
-        const OpenSubdiv::Far::ConstIndexArray vertices =
-            finalLevel.GetFaceVertices(face);
-        if (vertices.size() < 3) continue;
-        const int coarseFace = FindCoarseFace(*refiner, refinementLevel, face);
-        if (coarseFace < 0) {
-            return Fail(error, "failed to map a refined face to its coarse face");
-        }
-        faceCounts.push_back(vertices.size());
-        result->coarseFaceIndices.push_back(coarseFace);
-        for (int corner = 0; corner < vertices.size(); ++corner) {
-            faceIndices.push_back(vertices[corner]);
-        }
-        if (!refinedTexcoords.empty() &&
-            texcoordInterpolation == HdInterpolationFaceVarying) {
-            const OpenSubdiv::Far::ConstIndexArray values =
-                finalLevel.GetFaceFVarValues(face, 0);
-            if (values.size() != vertices.size()) {
-                return Fail(error, "refined texture topology is inconsistent");
+    if (!refinedTexcoords.empty() &&
+        texcoordInterpolation == HdInterpolationFaceVarying) {
+        finalFaceVaryingTexcoords.reserve(
+            data.refinedFaceVaryingIndices.size());
+        for (const int value : data.refinedFaceVaryingIndices) {
+            if (value < 0 ||
+                static_cast<std::size_t>(value) >= refinedTexcoords.size()) {
+                return Fail(error, "refined texture index is invalid");
             }
-            for (int corner = 0; corner < values.size(); ++corner) {
-                const int value = values[corner];
-                if (value < 0 ||
-                    static_cast<std::size_t>(value) >= refinedTexcoords.size()) {
-                    return Fail(error, "refined texture index is invalid");
-                }
-                const WeightedVec2& coordinate =
-                    refinedTexcoords[static_cast<std::size_t>(value)];
-                finalFaceVaryingTexcoords.push_back(GfVec2f(
-                    coordinate.values[0], coordinate.values[1]));
-            }
+            const WeightedVec2& coordinate =
+                refinedTexcoords[static_cast<std::size_t>(value)];
+            finalFaceVaryingTexcoords.push_back(GfVec2f(
+                coordinate.values[0], coordinate.values[1]));
         }
     }
-
-    result->topology = HdMeshTopology(
-        PxOsdOpenSubdivTokens->none,
-        topology.GetOrientation(), faceCounts, faceIndices, 0);
 
     if (texcoords.empty()) return true;
     result->texcoordInterpolation = texcoordInterpolation;

@@ -2,7 +2,7 @@
 
 ## Status
 
-The first CPU uniform-refinement milestone is implemented. Catmull-Clark,
+The CPU uniform-refinement milestone is implemented. Catmull-Clark,
 Loop, and bilinear topology, subdivision tags, holes/topological invisibility,
 orientation, the primary texture-coordinate primvar, material-subset mapping,
 and limit positions/normals reach the path tracer. Renderer settings expose an
@@ -10,10 +10,14 @@ on/off toggle and a level 0–8 override. Focused tests cover all three schemes,
 face-varying seams, uniform primvars, holes, creases, corners, and coarse-face
 mapping.
 
-Still required before Phases 1–2 are complete: cache topology refiners and
-interpolation tables across point-only updates, cover arbitrary retained
-primvars rather than only the renderer's primary UV set, add animated-point and
-dirty-bit integration tests, and add checked-in image comparisons.
+Topology refiners, emitted topology, coarse-face maps, and vertex, varying, and
+face-varying stencil tables are cached per mesh. Animated point and primvar
+values reevaluate against those tables; topology, tag, level, or face-varying
+index changes rebuild the cache. Tests assert both reuse and invalidation.
+
+Still required before Phase 2 is complete: cover arbitrary retained primvars
+rather than only the renderer's primary UV set, add Hydra dirty-bit integration
+tests, and add checked-in focused image comparisons.
 
 ## Scope and constraints
 
@@ -50,7 +54,8 @@ performance/quality phase rather than a prerequisite for correct Hydra support.
 
 Implemented details: final vertices and normals are evaluated with OpenSubdiv
 limit masks, so the current result is stronger than the original smooth-normal
-minimum. Refiner/table caching remains pending.
+minimum. Refiner, stencil-table, refined-topology, and coarse-face-map caching
+keeps point-only animation topology-invariant.
 
 ## Phase 2: topology and primvar correctness
 
