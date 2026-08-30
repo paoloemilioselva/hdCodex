@@ -1,5 +1,20 @@
 # Subdivision mesh plan
 
+## Status
+
+The first CPU uniform-refinement milestone is implemented. Catmull-Clark,
+Loop, and bilinear topology, subdivision tags, holes/topological invisibility,
+orientation, the primary texture-coordinate primvar, material-subset mapping,
+and limit positions/normals reach the path tracer. Renderer settings expose an
+on/off toggle and a level 0–8 override. Focused tests cover all three schemes,
+face-varying seams, uniform primvars, holes, creases, corners, and coarse-face
+mapping.
+
+Still required before Phases 1–2 are complete: cache topology refiners and
+interpolation tables across point-only updates, cover arbitrary retained
+primvars rather than only the renderer's primary UV set, add animated-point and
+dirty-bit integration tests, and add checked-in image comparisons.
+
 ## Scope and constraints
 
 Subdivision support will be built out of tree using public OpenUSD and
@@ -32,6 +47,10 @@ performance/quality phase rather than a prerequisite for correct Hydra support.
 5. Generate smooth normals on the refined topology. A later limit-stencil path
    may calculate analytic limit normals, but coarse faceted normals must never
    be used as subdivision shading normals.
+
+Implemented details: final vertices and normals are evaluated with OpenSubdiv
+limit masks, so the current result is stronger than the original smooth-normal
+minimum. Refiner/table caching remains pending.
 
 ## Phase 2: topology and primvar correctness
 
@@ -80,3 +99,13 @@ the deterministic fallback for unsupported hardware and regression testing.
 - Instanced subdivision prototypes produce identical shading while sharing
   refined geometry resources.
 - No private OpenUSD symbols or Houdini libraries enter the standalone build.
+
+## Runtime controls
+
+- `enableSubdivision` / `HDCODEX_ENABLE_SUBDIVISION`: defaults to enabled;
+  disabling it preserves the authored coarse cage.
+- `subdivisionLevel` / `HDCODEX_SUBDIVISION_LEVEL`: defaults to 2 and accepts
+  levels 0–8. Level 0 is the coarse cage even when subdivision is enabled.
+
+The fixed level is deliberately renderer-owned and deterministic. Adaptive,
+camera-dependent refinement remains Phase 4.

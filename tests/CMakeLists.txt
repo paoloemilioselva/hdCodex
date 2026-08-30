@@ -28,3 +28,9 @@ if(HDCODEX_ENABLE_MATERIALX)
     "PATH=path_list_prepend:${HDCODEX_OPENUSD_ROOT}/lib"
   )
 endif()
+
+if(HDCODEX_BUILD_HYDRA_PLUGIN)
+  add_executable(hdCodexSubdivisionTests subdivision_tests.cpp)
+  target_link_libraries(hdCodexSubdivisionTests PRIVATE hdCodexGeometry)
+  add_test(NAME hdCodex.Subdivision COMMAND hdCodexSubdivisionTests)
+endif()

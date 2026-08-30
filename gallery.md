@@ -3,7 +3,8 @@
 
 These images are versioned visual baselines, not golden-reference renders.
 The checked-in baselines are 1024 pixels wide and use 1024 spatial samples to
-reduce residual path-tracing noise. They render in 32 progressive updates.
+reduce residual path-tracing noise. They render in 32 progressive updates with
+subdivision enabled at the deterministic level-2 gallery setting.
 `render_gallery.bat` preserves the renderer's scene-linear output as temporary
 EXRs under `build/gallery-linear`, then writes these display JPEGs through a
 neutral HDR highlight compressor and the standard sRGB transfer function. An

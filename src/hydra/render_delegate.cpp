@@ -50,6 +50,22 @@ int EnvironmentInteger(const char* name, int fallback, int minimum, int maximum)
     return std::clamp(static_cast<int>(parsed), minimum, maximum);
 }
 
+bool EnvironmentBoolean(const char* name, bool fallback)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+    const std::string parsed(value);
+    if (parsed == "1" || parsed == "true" || parsed == "TRUE" ||
+        parsed == "on" || parsed == "ON") {
+        return true;
+    }
+    if (parsed == "0" || parsed == "false" || parsed == "FALSE" ||
+        parsed == "off" || parsed == "OFF") {
+        return false;
+    }
+    return fallback;
+}
+
 std::string EnvironmentString(const char* name, const char* fallback)
 {
     const char* value = std::getenv(name);
@@ -81,6 +97,12 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     HdRenderDelegate::SetRenderSetting(
         TfToken("shadingMode"), VtValue(EnvironmentString(
             "HDCODEX_SHADING_MODE", "fused")));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("enableSubdivision"), VtValue(EnvironmentBoolean(
+            "HDCODEX_ENABLE_SUBDIVISION", true)));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("subdivisionLevel"), VtValue(EnvironmentInteger(
+            "HDCODEX_SUBDIVISION_LEVEL", 2, 0, 8)));
     for (const auto& [key, value] : settingsMap) {
         HdRenderDelegate::SetRenderSetting(key, value);
     }
@@ -99,7 +121,9 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         GetRenderSetting<std::string>(TfToken("shadingMode"), "fused"));
     _renderParam = std::make_unique<HdCodexRenderParam>(
         &_scene, _materialCompiler.get(),
-        shadingMode.value_or(hdcodex::ShadingMode::Fused));
+        shadingMode.value_or(hdcodex::ShadingMode::Fused),
+        GetRenderSetting<bool>(TfToken("enableSubdivision"), true),
+        std::clamp(GetRenderSetting<int>(TfToken("subdivisionLevel"), 2), 0, 8));
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
 }
 
@@ -116,17 +140,39 @@ void HdCodexRenderDelegate::SetRenderSetting(
     const TfToken& key, const VtValue& value)
 {
     HdRenderDelegate::SetRenderSetting(key, value);
-    if (key != TfToken("shadingMode") || !_renderParam) return;
-    const std::string name =
-        VtValue::Cast<std::string>(value).GetWithDefault(std::string("fused"));
-    if (const auto mode = hdcodex::ParseShadingMode(name)) {
-        _renderParam->SetShadingMode(*mode);
+    if (!_renderParam) return;
+    if (key == TfToken("shadingMode")) {
+        const std::string name = VtValue::Cast<std::string>(value)
+            .GetWithDefault(std::string("fused"));
+        if (const auto mode = hdcodex::ParseShadingMode(name)) {
+            _renderParam->SetShadingMode(*mode);
+        }
+        return;
+    }
+
+    bool subdivisionChanged = false;
+    if (key == TfToken("enableSubdivision")) {
+        subdivisionChanged = _renderParam->SetSubdivisionEnabled(
+            VtValue::Cast<bool>(value).GetWithDefault(true));
+    } else if (key == TfToken("subdivisionLevel")) {
+        subdivisionChanged = _renderParam->SetSubdivisionLevel(std::clamp(
+            VtValue::Cast<int>(value).GetWithDefault(2), 0, 8));
+    }
+    if (subdivisionChanged && _renderIndex) {
+        HdChangeTracker& tracker = _renderIndex->GetChangeTracker();
+        for (const SdfPath& id : _renderIndex->GetRprimIds()) {
+            tracker.MarkRprimDirty(id,
+                HdChangeTracker::DirtyTopology |
+                HdChangeTracker::DirtyDisplayStyle |
+                HdChangeTracker::DirtySubdivTags);
+        }
     }
 }
 
 HdRenderPassSharedPtr HdCodexRenderDelegate::CreateRenderPass(
     HdRenderIndex* index, const HdRprimCollection& collection)
 {
+    _renderIndex = index;
     return std::make_shared<HdCodexRenderPass>(
         index, collection, this, &_scene,
 #if defined(HDCODEX_HAS_VULKAN)
@@ -230,6 +276,8 @@ HdCodexRenderDelegate::GetRenderSettingDescriptors() const
         {"Maximum Bounces", TfToken("maxBounces"), VtValue(8)},
         {"Samples per Update", TfToken("samplesPerUpdate"), VtValue(8)},
         {"Shading Mode", TfToken("shadingMode"), VtValue(std::string("fused"))},
+        {"Enable Subdivision", TfToken("enableSubdivision"), VtValue(true)},
+        {"Subdivision Level", TfToken("subdivisionLevel"), VtValue(2)},
     };
 }
 

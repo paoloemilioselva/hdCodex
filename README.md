@@ -122,6 +122,10 @@ asset-input and display-output format, not the path-throughput representation.
 - Production rendering defaults to 128 spatial samples, exposed as 16 visible
   eight-sample refinement updates. Hydra clients can change `samplesPerPixel`,
   `maxBounces`, and `samplesPerUpdate` without rebuilding the delegate.
+- Catmull-Clark, Loop, and bilinear meshes are uniformly refined to an
+  OpenSubdiv limit-surface approximation. `enableSubdivision` provides a
+  coarse-cage toggle and `subdivisionLevel` selects a bounded level from 0 to 8;
+  both settings rebuild affected mesh geometry when changed.
 - Static scene and accumulation data use device-local buffers; staging resources,
   command buffers, fences, descriptor sets, and shader-cache entries are reused.
 - The checked-in 512 px Gold shader-ball benchmark dropped from 16.61 s to about
@@ -134,8 +138,8 @@ current backend flattens visible world-space geometry into one BLAS and builds a
 single-instance TLAS when the published scene changes. Camera-only changes reuse
 the acceleration structures. Per-mesh BLAS caching, native TLAS instances,
 deforming-BLAS refits, overlapped readback, ray differentials/texture LOD, UDIM
-tiles beyond 1023, subdivision refinement, arbitrary MaterialX procedural
-graphs, and more UsdLux light types remain future work.
+tiles beyond 1023, adaptive subdivision, displacement, arbitrary MaterialX
+procedural graphs, and more UsdLux light types remain future work.
 
 Vulkan ray queries are the primary backend because they expose the same hardware
 RT units through a portable API and keep traversal inside the compute integrator.
@@ -188,12 +192,15 @@ equivalent environment variables before launching the render:
 set HDCODEX_SAMPLES_PER_PIXEL=512
 set HDCODEX_SAMPLES_PER_UPDATE=8
 set HDCODEX_MAX_BOUNCES=10
+set HDCODEX_ENABLE_SUBDIVISION=1
+set HDCODEX_SUBDIVISION_LEVEL=2
 render_codex.bat --imageWidth 1024 scene.usda output.exr
 ```
 
 Valid sample targets are 1–4096, update batches are 1–64, and path depth is
-1–12. Larger sample targets continue refining the same estimator; they do not
-change materials, lighting, or spectral reconstruction.
+1–12. Subdivision levels are 0–8; disabling subdivision or selecting level 0
+uses the authored coarse cage. Larger sample targets continue refining the same
+estimator; they do not change materials, lighting, or spectral reconstruction.
 
 ## Regression gallery
 

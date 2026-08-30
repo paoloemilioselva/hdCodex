@@ -19,6 +19,7 @@ class MaterialXCompiler;
 PXR_NAMESPACE_OPEN_SCOPE
 
 class HdCodexRenderParam;
+class HdRenderIndex;
 
 class HDCODEX_API HdCodexRenderDelegate final : public HdRenderDelegate {
 public:
@@ -59,6 +60,7 @@ private:
     std::unique_ptr<hdcodex::MaterialXCompiler> _materialCompiler;
     std::unique_ptr<HdCodexRenderParam> _renderParam;
     HdResourceRegistrySharedPtr _resourceRegistry;
+    HdRenderIndex* _renderIndex{nullptr};
 #if defined(HDCODEX_HAS_VULKAN)
     std::unique_ptr<hdcodex::VulkanContext> _vulkan;
     std::unique_ptr<hdcodex::VulkanPathTracer> _pathTracer;

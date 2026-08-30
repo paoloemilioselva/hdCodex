@@ -2,6 +2,7 @@
 
 #include "instancer.h"
 #include "render_param.h"
+#include "subdivision.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
@@ -10,11 +11,14 @@
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/smoothNormals.h"
 #include "pxr/imaging/hd/vertexAdjacency.h"
+#include "pxr/imaging/pxOsd/tokens.h"
+#include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/gf/vec2d.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3h.h"
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <optional>
@@ -40,6 +44,40 @@ struct ComputedPrimvars {
     HdExtComputationUtils::ValueStore values;
     std::map<TfToken, HdInterpolation> interpolations;
 };
+
+void ApplyTopologicalInvisibility(HdMeshTopology* topology)
+{
+    if (!topology) return;
+    VtIntArray holes = topology->GetHoleIndices();
+    holes.insert(
+        holes.end(), topology->GetInvisibleFaces().begin(),
+        topology->GetInvisibleFaces().end());
+
+    const VtIntArray& invisiblePoints = topology->GetInvisiblePoints();
+    if (!invisiblePoints.empty()) {
+        const VtIntArray& counts = topology->GetFaceVertexCounts();
+        const VtIntArray& indices = topology->GetFaceVertexIndices();
+        std::size_t cornerOffset = 0;
+        for (std::size_t face = 0; face < counts.size(); ++face) {
+            const int count = counts[face];
+            bool invisible = false;
+            for (int corner = 0; corner < count &&
+                 cornerOffset + static_cast<std::size_t>(corner) < indices.size();
+                 ++corner) {
+                invisible = invisible || std::find(
+                    invisiblePoints.begin(), invisiblePoints.end(),
+                    indices[cornerOffset + static_cast<std::size_t>(corner)]) !=
+                        invisiblePoints.end();
+            }
+            if (invisible) holes.push_back(static_cast<int>(face));
+            if (count > 0) cornerOffset += static_cast<std::size_t>(count);
+        }
+    }
+
+    std::sort(holes.begin(), holes.end());
+    holes.erase(std::unique(holes.begin(), holes.end()), holes.end());
+    topology->SetHoleIndices(holes);
+}
 
 ComputedPrimvars ReadComputedPrimvars(
     HdSceneDelegate* sceneDelegate, const SdfPath& id)
@@ -329,6 +367,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
     bool changed = false;
     VtVec3fArray points;
     HdMeshTopology topology;
+    HdDisplayStyle displayStyle;
     GfMatrix4d transform;
     VtVec2fArray texcoords;
     VtIntArray texcoordIndices;
@@ -358,8 +397,20 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 changed = true;
             }
         }
-        if (HdChangeTracker::IsTopologyDirty(*dirtyBits, id)) {
+        const bool topologyDirty =
+            HdChangeTracker::IsTopologyDirty(*dirtyBits, id);
+        if (topologyDirty) {
             _topology = GetMeshTopology(sceneDelegate);
+            ApplyTopologicalInvisibility(&_topology);
+            changed = true;
+        }
+        if (topologyDirty ||
+            (*dirtyBits & HdChangeTracker::DirtySubdivTags) != 0) {
+            _topology.SetSubdivTags(GetSubdivTags(sceneDelegate));
+            changed = true;
+        }
+        if ((*dirtyBits & HdChangeTracker::DirtyDisplayStyle) != 0) {
+            _displayStyle = GetDisplayStyle(sceneDelegate);
             changed = true;
         }
         if (primvarsDirty) {
@@ -415,6 +466,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
         if (HdChangeTracker::IsInstancerDirty(*dirtyBits, id)) changed = true;
         points = _points;
         topology = _topology;
+        displayStyle = _displayStyle;
         texcoords = _texcoords;
         texcoordIndices = _texcoordIndices;
         texcoordInterpolation = _texcoordInterpolation;
@@ -439,6 +491,37 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 return;
             }
 
+            const HdMeshTopology coarseTopology = topology;
+            VtIntArray refinedFaceToCoarseFace;
+            const int configuredLevel = param->GetSubdivisionLevel();
+            const int refinementLevel = configuredLevel >= 0
+                ? configuredLevel : displayStyle.refineLevel;
+            if (param->IsSubdivisionEnabled() && refinementLevel > 0 &&
+                topology.GetScheme() != PxOsdOpenSubdivTokens->none) {
+                HdCodexRefinedMeshGeometry refined;
+                std::string subdivisionError;
+                if (HdCodexRefineMesh(
+                    topology, points, texcoords, texcoordIndices,
+                    texcoordInterpolation, refinementLevel,
+                    &refined, &subdivisionError)) {
+                    topology = std::move(refined.topology);
+                    points = std::move(refined.points);
+                    texcoords = std::move(refined.texcoords);
+                    texcoordIndices = std::move(refined.texcoordIndices);
+                    texcoordInterpolation = refined.texcoordInterpolation;
+                    refinedFaceToCoarseFace =
+                        std::move(refined.coarseFaceIndices);
+                    // Authored coarse normals do not describe the refined
+                    // surface. Use OpenSubdiv limit-surface normals.
+                    normals = std::move(refined.normals);
+                    normalIndices.clear();
+                    normalInterpolation = HdInterpolationVertex;
+                } else {
+                    TF_WARN("hdCodex could not refine %s: %s",
+                        id.GetText(), subdivisionError.c_str());
+                }
+            }
+
             VtVec3iArray triangles;
             VtIntArray primitiveParams;
             HdMeshUtil(&topology, id).ComputeTriangleIndices(
@@ -446,8 +529,8 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
 
             const std::string baseMaterialId = materialId.GetString();
             std::vector<std::string> faceMaterialIds(
-                topology.GetFaceVertexCounts().size(), baseMaterialId);
-            for (const HdGeomSubset& subset : topology.GetGeomSubsets()) {
+                coarseTopology.GetFaceVertexCounts().size(), baseMaterialId);
+            for (const HdGeomSubset& subset : coarseTopology.GetGeomSubsets()) {
                 if (subset.type != HdGeomSubset::TypeFaceSet ||
                     subset.materialId.IsEmpty()) {
                     continue;
@@ -465,8 +548,14 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
             for (std::size_t triangleIndex = 0;
                  triangleIndex < primitiveParams.size() &&
                  triangleIndex < triangleMaterialIds.size(); ++triangleIndex) {
-                const int face = HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
+                const int refinedFace =
+                    HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(
                     primitiveParams[triangleIndex]);
+                const int face = refinedFace >= 0 &&
+                    static_cast<std::size_t>(refinedFace) <
+                        refinedFaceToCoarseFace.size()
+                    ? refinedFaceToCoarseFace[static_cast<std::size_t>(refinedFace)]
+                    : refinedFace;
                 if (face >= 0 &&
                     static_cast<std::size_t>(face) < faceMaterialIds.size()) {
                     triangleMaterialIds[triangleIndex] =
@@ -495,7 +584,11 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 : TriangulateTextureCoordinates(
                     topology, id, triangles, primitiveParams, texcoords,
                     texcoordIndices, texcoordInterpolation);
-            if (normals.empty()) {
+            if (displayStyle.flatShadingEnabled) {
+                normals.clear();
+                normalIndices.clear();
+                normalInterpolation = HdInterpolationConstant;
+            } else if (normals.empty()) {
                 Hd_VertexAdjacency adjacency;
                 adjacency.BuildAdjacencyTable(&topology);
                 normals = Hd_SmoothNormals::ComputeSmoothNormals(

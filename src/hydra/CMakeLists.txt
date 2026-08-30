@@ -1,3 +1,15 @@
+add_library(hdCodexGeometry STATIC
+  subdivision.cpp
+)
+target_link_libraries(hdCodexGeometry
+  PUBLIC
+    hdCodexProjectOptions
+    hd
+    pxOsd
+)
+target_include_directories(hdCodexGeometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(hdCodexGeometry PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 add_library(hdCodex SHARED
   camera.cpp
   instancer.cpp
@@ -13,6 +25,7 @@ add_library(hdCodex SHARED
 
 target_link_libraries(hdCodex
   PRIVATE
+    hdCodexGeometry
     hdCodex::Core
     $<$<BOOL:${HDCODEX_ENABLE_VULKAN}>:hdCodex::Gpu>
     $<$<BOOL:${HDCODEX_ENABLE_MATERIALX}>:hdCodex::MaterialX>

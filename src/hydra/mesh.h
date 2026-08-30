@@ -31,6 +31,7 @@ private:
     mutable std::mutex _mutex;
     VtVec3fArray _points;
     HdMeshTopology _topology;
+    HdDisplayStyle _displayStyle;
     VtVec2fArray _texcoords;
     VtIntArray _texcoordIndices;
     HdInterpolation _texcoordInterpolation{HdInterpolationConstant};
