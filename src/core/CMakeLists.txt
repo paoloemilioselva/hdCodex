@@ -1,5 +1,7 @@
 add_library(hdCodexCore STATIC
+  ${PROJECT_SOURCE_DIR}/include/hdcodex/core/display_transform.h
   ${PROJECT_SOURCE_DIR}/include/hdcodex/core/shading_mode.h
+  display_transform.cpp
   hash.cpp
   shader_cache.cpp
 )

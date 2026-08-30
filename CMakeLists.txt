@@ -59,6 +59,10 @@ if(HDCODEX_BUILD_HYDRA_PLUGIN)
   add_subdirectory(src/hydra)
 endif()
 
+if(HDCODEX_BUILD_HYDRA_PLUGIN OR HDCODEX_ENABLE_MATERIALX)
+  add_subdirectory(tools)
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()

@@ -1,3 +1,4 @@
+#include "hdcodex/core/display_transform.h"
 #include "hdcodex/core/hash.h"
 #include "hdcodex/core/shading_mode.h"
 #include "hdcodex/core/shader_cache.h"
@@ -6,6 +7,7 @@
 #include <array>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -50,6 +52,31 @@ void TestShadingModes()
             "modular shading mode name changed");
     Require(hdcodex::ShadingModeName(ShadingMode::RasterPreview) == "raster",
             "raster shading mode name changed");
+}
+
+void TestDisplayTransform()
+{
+    const auto black = hdcodex::SceneLinearToDisplaySrgb({0.0F, 0.0F, 0.0F});
+    Require(black == std::array<float, 3>{0.0F, 0.0F, 0.0F},
+            "display transform lifted black");
+
+    const auto middleGray =
+        hdcodex::SceneLinearToDisplaySrgb({0.18F, 0.18F, 0.18F});
+    Require(middleGray[0] > 0.40F && middleGray[0] < 0.42F &&
+                middleGray[0] == middleGray[1] &&
+                middleGray[1] == middleGray[2],
+            "display transform did not encode linear middle gray as sRGB");
+
+    const auto hdr = hdcodex::SceneLinearToDisplaySrgb({8.0F, 2.0F, 0.5F});
+    Require(hdr[0] <= 1.0F && hdr[0] > hdr[1] && hdr[1] > hdr[2] &&
+                hdr[2] >= 0.0F,
+            "neutral tone map clipped or reordered HDR color");
+
+    const auto sanitized = hdcodex::SceneLinearToDisplaySrgb(
+        {-1.0F, std::numeric_limits<float>::infinity(),
+         std::numeric_limits<float>::quiet_NaN()});
+    Require(sanitized == std::array<float, 3>{0.0F, 0.0F, 0.0F},
+            "display transform did not sanitize invalid radiance");
 }
 
 void TestCache()
@@ -257,6 +284,7 @@ int main()
 {
     try {
         TestSha256();
+        TestDisplayTransform();
         TestShadingModes();
         TestCache();
         TestVersionedScene();

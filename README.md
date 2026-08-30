@@ -205,9 +205,13 @@ The images in `gallery/` are checked-in visual baselines. They cover:
 - Collective Project 001 for UsdSkel deformation and mesh-subset materials.
 
 Run `render_gallery.bat` to regenerate every baseline at 1024 pixels wide and
-1024 samples per pixel. Record wall time in `gallery.md`, and commit both the
-changed images and timing table whenever an intentional renderer change affects
-output.
+1024 samples per pixel. The renderer remains scene-linear: the batch records
+temporary EXRs beneath `build/gallery-linear`, then applies the repository's
+neutral highlight compression and sRGB display encoding when writing the
+checked-in JPEGs. `HDCODEX_GALLERY_EXPOSURE` optionally adjusts display exposure
+in stops without changing transport. Record wall time in `gallery.md`, and
+commit both the changed images and timing table whenever an intentional renderer
+change affects output.
 
 ## License
 
