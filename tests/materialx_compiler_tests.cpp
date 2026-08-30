@@ -126,7 +126,7 @@ try {
     <input name="geomprop" type="string" value="st"/>
   </geompropvalue>
   <image name="albedo" type="color3">
-    <input name="file" type="filename" value="unused.png"/>
+    <input name="file" type="filename" value="unused.png" colorspace="srgb_tx"/>
     <input name="texcoord" type="vector2" nodename="st"/>
   </image>
   <open_pbr_surface name="surface" type="surfaceshader">
@@ -150,7 +150,8 @@ try {
               std::string::npos,
           "MaterialX vertex connector assignment was not flattened");
     Check(std::ranges::any_of(textured.textures, [](const auto& input) {
-        return input.name == "albedo_file" && input.value == "unused.png";
+        return input.name == "albedo_file" && input.value == "unused.png" &&
+            input.colorSpace == "srgb_texture";
     }), "MaterialX texture interface was not reflected");
     Check(std::ranges::any_of(textured.publicUniforms, [](const auto& input) {
         return input.name == "surface_base_weight" && input.type == "float";

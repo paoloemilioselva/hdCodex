@@ -168,8 +168,10 @@ The default pipeline is:
    unsupported auxiliary normal, volume, emission, and energy-compensation
    decorations preserve the independently supported base closure. USD-native
    `Usd*` networks are rejected rather than translated into MaterialX lookalikes.
-5. Decode referenced images through Hio and upload them to descriptor-indexed
-   Vulkan images with sRGB/raw formats selected per input role.
+5. Preserve filename color-space metadata from the MaterialX document, map the
+   USD/ASWF `srgb_tx` alias to MaterialX `srgb_texture`, then decode referenced
+   images through Hio and upload them to descriptor-indexed Vulkan images with
+   sRGB/raw formats selected by that graph metadata.
 
 glslang is embedded and pinned to the same Khronos Vulkan SDK release as the
 headers and loader. Compilation targets Vulkan 1.3 / SPIR-V 1.6; stage, entry

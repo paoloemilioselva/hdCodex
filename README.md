@@ -168,6 +168,7 @@ compile.bat
 validate_usd.bat
 render_test.bat
 render_codex.bat --imageWidth 512 --camera renderCam gallery\chess_board.usda gallery\chess_board.jpg
+render_gallery.bat
 launch_codex.bat
 ```
 
@@ -201,9 +202,10 @@ The images in `gallery/` are checked-in visual baselines. They cover:
 - Pixar KitchenSet for Z-up coordinates and per-mesh `displayColor` fallback.
 - Collective Project 001 for UsdSkel deformation and mesh-subset materials.
 
-Run the command printed beside each image in `gallery.md`, record wall time, and
-commit both the changed images and timing table whenever an intentional renderer
-change affects output.
+Run `render_gallery.bat` to regenerate every baseline at 1024 pixels wide and
+1024 samples per pixel. Record wall time in `gallery.md`, and commit both the
+changed images and timing table whenever an intentional renderer change affects
+output.
 
 ## License
 

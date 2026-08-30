@@ -29,7 +29,14 @@ def main() -> int:
             )
             value = shader_input.Get()
             if value is not None or source_text:
-                print(f"  {shader_input.GetBaseName()}: {value!r} <- {source_text}")
+                color_space = shader_input.GetAttr().GetColorSpace()
+                color_space_text = (
+                    f" colorspace={color_space}" if color_space else ""
+                )
+                print(
+                    f"  {shader_input.GetBaseName()}: {value!r}"
+                    f"{color_space_text} <- {source_text}"
+                )
         count += 1
         if count >= args.limit:
             break

@@ -12,6 +12,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -169,7 +170,9 @@ MaterialXGeneratedProgram BuildGeneratedProgram(
 }
 
 void DumpGeneratedProgram(
-    const MaterialXGeneratedProgram& program, std::string_view shaderName)
+    const MaterialXGeneratedProgram& program,
+    const std::vector<MaterialXShaderInput>& textures,
+    std::string_view shaderName)
 {
     const char* enabled = std::getenv("HDCODEX_DUMP_MATERIALX_PROGRAM");
     const char* filter = std::getenv("HDCODEX_DUMP_MATERIALX_FILTER");
@@ -190,6 +193,12 @@ void DumpGeneratedProgram(
             }
             std::cerr << '\n';
         }
+    }
+    for (const MaterialXShaderInput& texture : textures) {
+        std::cerr << "texture " << texture.name << " = " << texture.value
+                  << " colorspace="
+                  << (texture.colorSpace.empty() ? "<none>" : texture.colorSpace)
+                  << '\n';
     }
 }
 
@@ -269,19 +278,65 @@ std::vector<MaterialXShaderInput> ReflectPublicUniforms(
     return result;
 }
 
+std::string CanonicalColorSpace(std::string_view colorSpace)
+{
+    // USD assets commonly use the ASWF Color Interop texture alias while
+    // MaterialX's built-in color management library calls the same transfer
+    // function srgb_texture. Keep the compiler boundary in MaterialX terms.
+    if (colorSpace == "srgb_tx" || colorSpace == "srgb_rec709_scene") {
+        return "srgb_texture";
+    }
+    if (colorSpace == "lin_rec709_scene") return "lin_rec709";
+    return std::string(colorSpace);
+}
+
+std::map<std::string, std::string, std::less<>> FilenameColorSpaces(
+    const MaterialX::DocumentPtr& document)
+{
+    std::map<std::string, std::string, std::less<>> result;
+    for (const MaterialX::ElementPtr& element : document->traverseTree()) {
+        const MaterialX::InputPtr input = element->asA<MaterialX::Input>();
+        if (!input || input->getType() != MaterialX::FILENAME_TYPE_STRING ||
+            !input->hasValue()) {
+            continue;
+        }
+        const std::string value = input->getValueString();
+        if (value.empty()) continue;
+        const std::string colorSpace = CanonicalColorSpace(
+            input->getActiveColorSpace());
+        const auto [position, inserted] = result.try_emplace(value, colorSpace);
+        if (!inserted && position->second.empty()) {
+            position->second = colorSpace;
+        } else if (!inserted && !colorSpace.empty() &&
+                   position->second != colorSpace) {
+            throw std::runtime_error(
+                "MaterialX filename is used with conflicting color spaces: " +
+                value);
+        }
+    }
+    return result;
+}
+
 std::vector<MaterialXShaderInput> ReflectTextures(
-    const MaterialX::ShaderStage& stage)
+    const MaterialX::ShaderStage& stage,
+    const MaterialX::DocumentPtr& document)
 {
     std::vector<MaterialXShaderInput> result;
+    const auto sourceColorSpaces = FilenameColorSpaces(document);
     for (const auto& [blockName, block] : stage.getUniformBlocks()) {
         (void)blockName;
         for (const MaterialX::ShaderPort* port : block->getVariableOrder()) {
             if (port->getType() != MaterialX::Type::FILENAME) continue;
+            std::string colorSpace = CanonicalColorSpace(port->getColorSpace());
+            if (colorSpace.empty()) {
+                const auto source = sourceColorSpaces.find(port->getValueString());
+                if (source != sourceColorSpaces.end()) colorSpace = source->second;
+            }
             result.push_back({
                 .name = port->getVariable(),
                 .type = port->getType().getName(),
                 .value = port->getValueString(),
-                .colorSpace = port->getColorSpace(),
+                .colorSpace = std::move(colorSpace),
             });
         }
     }
@@ -345,11 +400,11 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     result.pixelSource = shader->getSourceCode(MaterialX::Stage::PIXEL);
     const auto& pixelStage = shader->getStage(MaterialX::Stage::PIXEL);
     result.publicUniforms = ReflectPublicUniforms(pixelStage);
-    result.textures = ReflectTextures(pixelStage);
+    result.textures = ReflectTextures(pixelStage, generationDocument);
     if (mode != ShadingMode::RasterPreview) {
         result.program = BuildGeneratedProgram(
             generationDocument, renderables.front());
-        DumpGeneratedProgram(result.program, shaderName);
+        DumpGeneratedProgram(result.program, result.textures, shaderName);
         result.closure = CompileMaterialXClosure(result.program);
     }
     FlattenVulkanVertexData(*shader, result.vertexSource, result.pixelSource);

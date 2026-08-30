@@ -63,8 +63,7 @@ std::string LoadTexture(
     std::string_view path,
     std::string_view colorSpace)
 {
-    const bool srgb = colorSpace == "srgb_texture" ||
-        colorSpace == "srgb_rec709_scene";
+    const bool srgb = colorSpace == "srgb_texture";
     return hdcodex::LoadSceneTexture(
         scene, std::string(path),
         srgb ? hdcodex::TextureColorSpace::Srgb
