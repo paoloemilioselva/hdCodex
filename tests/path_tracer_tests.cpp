@@ -213,6 +213,24 @@ try {
                 light.id);
         }
     }
+
+    scene->lights.clear();
+    for (std::size_t index = 0; index < 63U; ++index) {
+        scene->lights.push_back({
+            .id = "/black" + std::to_string(index),
+            .type = hdcodex::SceneLightType::Dome,
+            .intensity = 0.0F,
+        });
+    }
+    scene->lights.push_back(authoredLights[1]);
+    tracer.SetScene(scene);
+    const auto selectedLightPixels = renderSamples(1U);
+    const float selectedLightCenterLuma = selectedLightPixels[center] +
+        selectedLightPixels[center + 1U] + selectedLightPixels[center + 2U];
+    Check(std::isfinite(selectedLightCenterLuma) &&
+              selectedLightCenterLuma > 0.01F,
+          "power-weighted analytic-light selection missed the only emitting light");
+
     scene->lights = authoredLights;
     tracer.SetScene(scene);
 

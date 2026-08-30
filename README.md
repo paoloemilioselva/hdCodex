@@ -100,6 +100,8 @@ asset-input and display-output format, not the path-throughput representation.
   BSDF continuation paths. Lat-long and automatic-layout HDR domes use
   luminance/solid-angle texture importance sampling; other projections retain
   an unbiased uniform-direction fallback.
+- Shading-point- and material-aware power selection across authored analytic
+  lights, with the same selection mixture used by dome continuation-path MIS.
 - Rectangle-light transforms, textured emission, area normalization, shaping,
   diffuse/specular multipliers, and colored distance-limited shadows.
 - Geometry-aware disk, sphere, and cylinder area sampling plus angular-diameter

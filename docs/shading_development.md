@@ -216,7 +216,7 @@ generated architecture.
 | Volume terminals | Unsupported; only one homogeneous interior transmission medium is tracked |
 | Caustics | Incidental and very inefficient for environment paths; no robust caustics from analytic lights |
 | Emission | Visible surface EDFs plus power-weighted emissive-triangle next-event sampling and matching BSDF-hit MIS; no volume emission |
-| Lights | Hydra dome, rectangle, disk, sphere, cylinder, and distant lights plus emissive mesh triangles; power-heuristic MIS covers authored domes and mesh EDFs, while automatic/lat-long domes and mesh emitters use power distributions; no portal lights or light linking |
+| Lights | Hydra dome, rectangle, disk, sphere, cylinder, and distant lights plus emissive mesh triangles; analytic lights use shading-point/material-aware power selection, power-heuristic MIS covers authored domes and mesh EDFs, and automatic/lat-long domes and mesh emitters use power distributions; no portal lights or light linking |
 | Geometry shaders | Displacement unsupported; subdivision uses coarse topology |
 | Hair | Hair BSDF and curve geometry unsupported |
 | Textures | Fixed repeat addressing, base mip only, no ray differentials, limited UDIM range, and role-based rather than graph-authored color handling |
@@ -361,7 +361,8 @@ labeled as a lighting preview rather than a path-transport reference.
   normalization, shaping, and shadow controls.
 - Implemented: area/luminance-power sampling of emissive triangles with exact
   texture/opacity evaluation, visibility, solid-angle PDFs, and BSDF-hit MIS.
-- Shading-point-aware power sampling across analytic lights.
+- Implemented: shading-point- and material-aware power sampling across
+  analytic lights, including exact selection-mixture PDFs for dome MIS.
 - Extend BSDF/light MIS to every non-delta analytic light representation.
 - Complete portal/geometry lights, IES shaping, visibility categories, and
   light linking.

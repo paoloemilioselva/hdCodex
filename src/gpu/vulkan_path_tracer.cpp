@@ -647,17 +647,112 @@ void sampleDomeLight(GpuLight light, inout uint rng,
                          ivec2(column, row), 0).b, 0.0);
 }
 
-float environmentLightPdf(vec3 direction)
+float lightSelectionWeight(
+    GpuLight light, vec3 position, vec3 normal,
+    float diffuseEnergy, float specularEnergy, float translucentEnergy)
+{
+    float power = max(light.geometry.w, 0.0);
+    if (power <= 0.0) return 0.0;
+    float diffuseResponse = max(diffuseEnergy, 0.0) * light.controls.x;
+    float specularResponse = max(specularEnergy, 0.0) * light.controls.y;
+    float transmissionResponse = max(translucentEnergy, 0.0) * light.controls.x;
+    float minimumWeight = power * 0.01;
+    uint type = light.textureInfo.z;
+    if (type == 0u) {
+        return max(minimumWeight, power *
+            (0.5 * (diffuseResponse + transmissionResponse) +
+             specularResponse));
+    }
+    vec3 direction;
+    float geometryFactor = 1.0;
+    if (type == 5u) {
+        direction = normalize(light.basisZ.xyz);
+    } else {
+        vec3 toLight = light.position.xyz - position;
+        float distanceSquared = max(dot(toLight, toLight), 1e-4);
+        direction = toLight * inversesqrt(distanceSquared);
+        geometryFactor = 1.0 / distanceSquared;
+        if (type == 1u || type == 2u) {
+            vec3 lightNormal = -normalize(light.basisZ.xyz);
+            geometryFactor *= max(dot(lightNormal, -direction), 0.0);
+        } else if (type == 4u) {
+            // The center is on the cylinder axis. Half is the mean projected
+            // side cosine over its circumference.
+            geometryFactor *= 0.5;
+        }
+    }
+    float nDotL = dot(normal, direction);
+    float response = max(nDotL, 0.0) *
+        (diffuseResponse + specularResponse) +
+        max(-nDotL, 0.0) * transmissionResponse;
+    return max(minimumWeight, power * geometryFactor * response);
+}
+
+float totalAnalyticLightWeight(
+    vec3 position, vec3 normal,
+    float diffuseEnergy, float specularEnergy, float translucentEnergy)
+{
+    uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+    float total = 0.0;
+    for (uint index = 0u; index < lightCount; ++index) {
+        total += lightSelectionWeight(
+            lights[index], position, normal,
+            diffuseEnergy, specularEnergy, translucentEnergy);
+    }
+    return total;
+}
+
+void sampleAnalyticLight(
+    vec3 position, vec3 normal,
+    float diffuseEnergy, float specularEnergy, float translucentEnergy,
+    inout uint rng, out uint lightIndex, out float selectionPdf)
+{
+    uint lightCount = (camera.frame.w >> 16u) & 0xffu;
+    float total = totalAnalyticLightWeight(
+        position, normal, diffuseEnergy, specularEnergy, translucentEnergy);
+    if (total <= 0.0) {
+        lightIndex = min(uint(randomFloat(rng) * float(lightCount)),
+                         lightCount - 1u);
+        selectionPdf = 1.0 / float(lightCount);
+        return;
+    }
+    float target = randomFloat(rng) * total;
+    float accumulated = 0.0;
+    lightIndex = lightCount - 1u;
+    for (uint index = 0u; index < lightCount; ++index) {
+        float weight = lightSelectionWeight(
+            lights[index], position, normal,
+            diffuseEnergy, specularEnergy, translucentEnergy);
+        accumulated += weight;
+        if (target <= accumulated) {
+            lightIndex = index;
+            break;
+        }
+    }
+    selectionPdf = lightSelectionWeight(
+        lights[lightIndex], position, normal,
+        diffuseEnergy, specularEnergy, translucentEnergy) / total;
+}
+
+float environmentLightPdf(
+    vec3 position, vec3 normal, vec3 direction,
+    float diffuseEnergy, float specularEnergy, float translucentEnergy)
 {
     uint lightCount = (camera.frame.w >> 16u) & 0xffu;
     if (lightCount == 0u) return 0.0;
+    float total = totalAnalyticLightWeight(
+        position, normal, diffuseEnergy, specularEnergy, translucentEnergy);
+    if (total <= 0.0) return 0.0;
     float pdf = 0.0;
     for (uint index = 0u; index < lightCount; ++index) {
         if (lights[index].textureInfo.z == 0u) {
-            pdf += domeLightPdf(lights[index], direction);
+            float selectionPdf = lightSelectionWeight(
+                lights[index], position, normal,
+                diffuseEnergy, specularEnergy, translucentEnergy) / total;
+            pdf += selectionPdf * domeLightPdf(lights[index], direction);
         }
     }
-    return pdf / float(lightCount);
+    return pdf;
 }
 
 vec4 sampleMaterialTexture(uint textureIndex, vec2 uv, vec4 fallbackValue)
@@ -1119,6 +1214,7 @@ void main()
     bool environmentOnMiss = true;
     bool previousWasDelta = true;
     float previousBsdfPdf = 0.0;
+    float previousEnvironmentLightPdf = 0.0;
     bool insideMedium = false;
     float mediumAbsorption = 0.0;
     float mediumScattering = 0.0;
@@ -1149,7 +1245,7 @@ void main()
         {
             if (environmentOnMiss) {
                 float misWeight = previousWasDelta ? 1.0 : powerHeuristic(
-                    previousBsdfPdf, environmentLightPdf(rayDirection));
+                    previousBsdfPdf, previousEnvironmentLightPdf);
                 radiance += throughput * misWeight * vec3(illuminantSpectrum(
                     environment(rayDirection), wavelength));
             }
@@ -1362,8 +1458,13 @@ void main()
 )glsl" +
 R"glsl(
         if (lightCount > 0u) {
-            uint lightIndex = min(uint(randomFloat(rng) * float(lightCount)),
-                                  lightCount - 1u);
+            float directSpecularEnergy = specularEnergy +
+                luminance(coatContribution) + sheenProbability;
+            uint lightIndex;
+            float lightSelectionPdf;
+            sampleAnalyticLight(
+                hit, normal, diffuseEnergy, directSpecularEnergy,
+                translucentEnergy, rng, lightIndex, lightSelectionPdf);
             GpuLight light = lights[lightIndex];
             vec3 lightDirection = vec3(0.0, 1.0, 0.0);
             vec3 lightRadiance = vec3(0.0);
@@ -1465,7 +1566,10 @@ R"glsl(
                     vec3 spectralVisibility = vec3(reflectanceSpectrum(
                         visibility, wavelength));
                     float misWeight = light.textureInfo.z == 0u
-                        ? powerHeuristic(environmentLightPdf(lightDirection),
+                        ? powerHeuristic(environmentLightPdf(
+                                hit, normal, lightDirection,
+                                diffuseEnergy, directSpecularEnergy,
+                                translucentEnergy),
                             surfaceReflectionPdf(
                                 normal, tangent, viewDirection, lightDirection,
                                 roughness, coatRoughness, sheenProbability,
@@ -1473,8 +1577,8 @@ R"glsl(
                                 translucentProbability))
                         : 1.0;
                     radiance += throughput * direct * spectralLight *
-                        spectralVisibility * inversePdf * float(lightCount) *
-                        misWeight;
+                        spectralVisibility * inversePdf * misWeight /
+                        max(lightSelectionPdf, 1e-8);
                 }
             }
         } else if (!hasMeshLights) {
@@ -1751,6 +1855,13 @@ R"glsl(
                 translucentProbability);
             previousWasDelta = false;
             environmentOnMiss = true;
+            previousEnvironmentLightPdf = lightCount > 0u
+                ? environmentLightPdf(
+                    hit, normal, rayDirection, diffuseEnergy,
+                    specularEnergy + luminance(coatContribution) +
+                        sheenProbability,
+                    translucentEnergy)
+                : 0.0;
         }
         if (bounce >= 2) {
             float survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
@@ -2376,7 +2487,7 @@ public:
         }
         GlslCompileOptions options;
         const std::string modeName(ShadingModeName(mode));
-        options.generatorVersion = "hdCodex.pathtracer.spectral.v18." + modeName;
+        options.generatorVersion = "hdCodex.pathtracer.spectral.v19." + modeName;
         options.materialAbi = "hdcodex.pathtracer.materialx-surface.v11." + modeName;
         if (mode == ShadingMode::Modular) {
             options.generateDebugInfo = true;
@@ -2587,10 +2698,32 @@ public:
                 light.type != SceneLightType::Distant && light.normalize) {
                 radianceScale /= std::max(light.area, 1e-8F);
             }
+            const std::array<float, 3> emittedColor{
+                light.color[0] * light.temperatureColor[0],
+                light.color[1] * light.temperatureColor[1],
+                light.color[2] * light.temperatureColor[2]};
+            float emittedLuminance =
+                0.2126F * std::max(emittedColor[0], 0.0F) +
+                0.7152F * std::max(emittedColor[1], 0.0F) +
+                0.0722F * std::max(emittedColor[2], 0.0F);
+            if (!light.texture.empty() &&
+                (light.type == SceneLightType::Dome ||
+                 light.type == SceneLightType::Rect)) {
+                emittedLuminance *= textureAverageLuminance(light.texture);
+            }
+            float emitterMeasure = 1.0F;
+            if (light.type == SceneLightType::Dome) {
+                emitterMeasure = 12.5663706144F;
+            } else if (light.type != SceneLightType::Distant) {
+                emitterMeasure = std::max(light.area, 0.0F);
+            }
+            float selectionPower = std::max(
+                emittedLuminance * std::max(radianceScale, 0.0F) *
+                    emitterMeasure,
+                0.0F);
+            if (!std::isfinite(selectionPower)) selectionPower = 0.0F;
             lights.push_back({
-                {light.color[0] * light.temperatureColor[0],
-                 light.color[1] * light.temperatureColor[1],
-                 light.color[2] * light.temperatureColor[2], radianceScale},
+                {emittedColor[0], emittedColor[1], emittedColor[2], radianceScale},
                 {light.diffuse, light.specular,
                  static_cast<float>(light.type),
                  std::max(light.area, 0.0F)},
@@ -2608,7 +2741,7 @@ public:
                  light.shadowFalloff, light.shadowFalloffGamma},
                 {light.shadowColor[0], light.shadowColor[1],
                  light.shadowColor[2], 0.0F},
-                {light.radius, light.length, light.angle, 0.0F},
+                {light.radius, light.length, light.angle, selectionPower},
                 {textureIndex(light.texture),
                  static_cast<std::uint32_t>(light.textureFormat),
                  static_cast<std::uint32_t>(light.type),
