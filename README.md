@@ -128,6 +128,12 @@ asset-input and display-output format, not the path-throughput representation.
   both settings rebuild affected mesh geometry when changed. Topology and
   interpolation stencils are cached so point-only deformation only reevaluates
   refined values.
+- MaterialX scalar and tangent-space vector displacement is evaluated on the
+  refined mesh before acceleration-structure construction. Constant, value,
+  coordinate/geomprop, and image-driven graphs use the compiled MaterialX
+  program; face-varying UV and material discontinuities split displaced vertex
+  groups instead of averaging across seams. `enableDisplacement` provides an
+  independent runtime toggle and defaults to enabled.
 - Static scene and accumulation data use device-local buffers; staging resources,
   command buffers, fences, descriptor sets, and shader-cache entries are reused.
 - The checked-in 512 px Gold shader-ball benchmark dropped from 16.61 s to about
@@ -140,7 +146,7 @@ current backend flattens visible world-space geometry into one BLAS and builds a
 single-instance TLAS when the published scene changes. Camera-only changes reuse
 the acceleration structures. Per-mesh BLAS caching, native TLAS instances,
 deforming-BLAS refits, overlapped readback, ray differentials/texture LOD, UDIM
-tiles beyond 1023, adaptive subdivision, displacement, arbitrary MaterialX
+tiles beyond 1023, adaptive/micropolygon displacement, arbitrary MaterialX
 procedural graphs, and more UsdLux light types remain future work.
 
 Vulkan ray queries are the primary backend because they expose the same hardware
@@ -196,13 +202,16 @@ set HDCODEX_SAMPLES_PER_UPDATE=8
 set HDCODEX_MAX_BOUNCES=10
 set HDCODEX_ENABLE_SUBDIVISION=1
 set HDCODEX_SUBDIVISION_LEVEL=2
+set HDCODEX_ENABLE_DISPLACEMENT=1
 render_codex.bat --imageWidth 1024 scene.usda output.exr
 ```
 
 Valid sample targets are 1–4096, update batches are 1–64, and path depth is
 1–12. Subdivision levels are 0–8; disabling subdivision or selecting level 0
-uses the authored coarse cage. Larger sample targets continue refining the same
-estimator; they do not change materials, lighting, or spectral reconstruction.
+uses the authored coarse cage. Displacement can be disabled independently for
+memory/performance comparisons. Larger sample targets continue refining the
+same estimator; they do not change materials, lighting, or spectral
+reconstruction.
 
 ## Regression gallery
 

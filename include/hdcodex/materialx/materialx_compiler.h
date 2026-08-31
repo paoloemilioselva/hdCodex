@@ -7,6 +7,8 @@
 
 #include <MaterialXCore/Document.h>
 
+#include <array>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <optional>
@@ -34,6 +36,7 @@ struct MaterialXProgramInput {
     std::string value;
     std::string upstreamNode;
     std::string upstreamOutput;
+    std::string colorSpace;
 };
 
 /// A MaterialX node after NodeGraph implementations (including OpenPBR and
@@ -65,10 +68,33 @@ struct MaterialXCompiledShader {
     std::vector<MaterialXShaderInput> publicUniforms;
     std::vector<MaterialXShaderInput> textures;
     MaterialXGeneratedProgram program;
+    MaterialXGeneratedProgram displacementProgram;
     /// Renderer closure ABI compiled exclusively from the expanded MaterialX
     /// program. Empty for raster preview or when no path program is requested.
     std::optional<SceneMaterial> closure;
 };
+
+struct MaterialXEvaluationContext {
+    std::array<float, 2> texcoord{};
+    std::array<float, 3> position{};
+    std::array<float, 3> normal{0.0F, 0.0F, 1.0F};
+    std::array<float, 3> tangent{1.0F, 0.0F, 0.0F};
+    std::array<float, 3> bitangent{0.0F, 1.0F, 0.0F};
+    std::function<std::array<float, 4>(
+        std::string_view, std::string_view, const std::array<float, 2>&)>
+        sampleTexture;
+};
+
+struct MaterialXDisplacement {
+    /// Scalar displacement is returned in vector[2] and follows the normal.
+    /// Vector displacement uses all three tangent/bitangent/normal components.
+    std::array<float, 3> vector{};
+    bool tangentSpace{false};
+};
+
+[[nodiscard]] MaterialXDisplacement EvaluateMaterialXDisplacement(
+    const MaterialXGeneratedProgram& program,
+    const MaterialXEvaluationContext& context);
 
 /// Compiles an expanded MaterialX program into the currently supported
 /// renderer closure ABI. The compiler recognizes only primitive MaterialX
@@ -93,6 +119,12 @@ public:
         std::string_view xml,
         std::string_view shaderName,
         ShadingMode mode = ShadingMode::Fused) const;
+
+    /// Builds the dependency-ordered program for a specific MaterialX shader
+    /// terminal without compiling a raster pipeline.
+    [[nodiscard]] MaterialXGeneratedProgram CompileProgram(
+        const MaterialX::DocumentPtr& document,
+        std::string_view outputType) const;
 
     [[nodiscard]] static std::string GeneratorVersion();
 

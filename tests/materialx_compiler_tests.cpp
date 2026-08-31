@@ -547,6 +547,82 @@ try {
         return input.name == "albedo_file" && input.value == "unused.png";
     }), "MaterialX USD primvar reader graph lost its image input");
 
+    const hdcodex::MaterialXGeneratedProgram scalarDisplacementProgram{
+        .outputNode = "displacement",
+        .nodes = {
+            {.name = "uv", .category = "texcoord",
+             .nodeDef = "ND_texcoord_vector2", .type = "vector2"},
+            {.name = "scaled_uv", .category = "multiply",
+             .nodeDef = "ND_multiply_vector2", .type = "vector2", .inputs = {
+                 {.name = "in1", .type = "vector2", .upstreamNode = "uv"},
+                 {.name = "in2", .type = "vector2", .value = "2,1"}}},
+            {.name = "height", .category = "image",
+             .nodeDef = "ND_image_float", .type = "float", .inputs = {
+                 {.name = "file", .type = "filename", .value = "height.exr",
+                  .colorSpace = "raw"},
+                 {.name = "texcoord", .type = "vector2",
+                  .upstreamNode = "scaled_uv"}}},
+            {.name = "center", .category = "subtract",
+             .nodeDef = "ND_subtract_float", .type = "float", .inputs = {
+                 {.name = "in1", .type = "float", .upstreamNode = "height"},
+                 {.name = "in2", .type = "float", .value = "0.5"}}},
+            {.name = "displacement", .category = "displacement",
+             .nodeDef = "ND_displacement_float", .type = "displacementshader",
+             .inputs = {
+                 {.name = "displacement", .type = "float",
+                  .upstreamNode = "center"},
+                 {.name = "scale", .type = "float", .value = "2"}}},
+        }};
+    hdcodex::MaterialXEvaluationContext displacementContext;
+    displacementContext.texcoord = {0.25F, 0.75F};
+    displacementContext.sampleTexture = [](std::string_view path,
+                                            std::string_view colorSpace,
+                                            const std::array<float, 2>& uv) {
+        Check(path == "height.exr" && colorSpace == "raw",
+              "displacement image metadata was not preserved");
+        Check(std::abs(uv[0] - 0.5F) < 1e-5F &&
+                  std::abs(uv[1] - 0.75F) < 1e-5F,
+              "displacement image did not receive evaluated texture coordinates");
+        return std::array<float, 4>{0.75F, 0.0F, 0.0F, 1.0F};
+    };
+    const hdcodex::MaterialXDisplacement scalarDisplacement =
+        hdcodex::EvaluateMaterialXDisplacement(
+            scalarDisplacementProgram, displacementContext);
+    Check(!scalarDisplacement.tangentSpace &&
+              std::abs(scalarDisplacement.vector[2] - 0.5F) < 1e-5F,
+          "MaterialX scalar image displacement graph evaluated incorrectly");
+
+    const hdcodex::MaterialXGeneratedProgram vectorDisplacementProgram{
+        .outputNode = "vector_displacement",
+        .nodes = {
+            {.name = "vector_displacement", .category = "displacement",
+             .nodeDef = "ND_displacement_vector3",
+             .type = "displacementshader", .inputs = {
+                 {.name = "displacement", .type = "vector3",
+                  .value = "1, 2, 3"},
+                 {.name = "scale", .type = "float", .value = "0.5"}}},
+        }};
+    const hdcodex::MaterialXDisplacement vectorDisplacement =
+        hdcodex::EvaluateMaterialXDisplacement(
+            vectorDisplacementProgram, displacementContext);
+    Check(vectorDisplacement.tangentSpace &&
+              std::abs(vectorDisplacement.vector[0] - 0.5F) < 1e-5F &&
+              std::abs(vectorDisplacement.vector[2] - 1.5F) < 1e-5F,
+          "MaterialX tangent-space vector displacement evaluated incorrectly");
+
+    const MaterialX::DocumentPtr displacementDocument =
+        MaterialX::createDocument();
+    const MaterialX::NodePtr displacementTerminal = displacementDocument->addNode(
+        "displacement", "terminal", "displacementshader");
+    displacementTerminal->addInput("displacement", "float")->setValue(0.25F);
+    displacementTerminal->addInput("scale", "float")->setValue(2.0F);
+    const hdcodex::MaterialXGeneratedProgram compiledDisplacement =
+        compiler.CompileProgram(displacementDocument, "displacementshader");
+    Check(compiledDisplacement.outputNode == "terminal" &&
+              !compiledDisplacement.nodes.empty() &&
+              compiledDisplacement.nodes.back().category == "displacement",
+          "standalone MaterialX displacement terminal was not compiled");
+
     std::filesystem::remove_all(cacheRoot, error);
     std::cout << hdcodex::MaterialXCompiler::GeneratorVersion()
               << ": generation, compilation, and cache tests passed\n";

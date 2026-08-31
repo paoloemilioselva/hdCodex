@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -80,6 +81,7 @@ struct SceneMaterial {
         std::string value;
         std::string upstreamNode;
         std::string upstreamOutput;
+        std::string colorSpace;
     };
 
     struct GeneratedNode {
@@ -110,6 +112,8 @@ struct SceneMaterial {
     /// never inspects the authored high-level surface-model identifier.
     std::string materialXOutputNode;
     std::vector<GeneratedNode> materialXProgram;
+    std::string materialXDisplacementOutputNode;
+    std::vector<GeneratedNode> materialXDisplacementProgram;
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
     std::array<float, 3> transmissionColor{1.0F, 1.0F, 1.0F};
@@ -346,6 +350,16 @@ public:
     {
         const std::scoped_lock lock(_mutex);
         return _textures.contains(id);
+    }
+
+    [[nodiscard]] std::optional<SceneTexture> GetTexture(
+        const std::string& id) const
+    {
+        const std::scoped_lock lock(_mutex);
+        const auto found = _textures.find(id);
+        return found == _textures.end()
+            ? std::optional<SceneTexture>{}
+            : std::optional<SceneTexture>{found->second};
     }
 
     void UpsertTexture(SceneTexture texture)

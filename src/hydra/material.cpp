@@ -170,27 +170,38 @@ void AttachGeneratedProgram(
         resolveClosureTexture(*texture);
     }
 
-    material.materialXOutputNode = compiled.program.outputNode;
-    material.materialXProgram.reserve(compiled.program.nodes.size());
-    for (const hdcodex::MaterialXProgramNode& sourceNode : compiled.program.nodes) {
-        hdcodex::SceneMaterial::GeneratedNode node{
-            .name = sourceNode.name,
-            .category = sourceNode.category,
-            .nodeDef = sourceNode.nodeDef,
-            .type = sourceNode.type,
-        };
-        node.inputs.reserve(sourceNode.inputs.size());
-        for (const hdcodex::MaterialXProgramInput& sourceInput : sourceNode.inputs) {
-            node.inputs.push_back({
-                .name = sourceInput.name,
-                .type = sourceInput.type,
-                .value = sourceInput.value,
-                .upstreamNode = sourceInput.upstreamNode,
-                .upstreamOutput = sourceInput.upstreamOutput,
-            });
+    const auto copyProgram = [](
+        const hdcodex::MaterialXGeneratedProgram& source,
+        std::string& output,
+        std::vector<hdcodex::SceneMaterial::GeneratedNode>& target) {
+        output = source.outputNode;
+        target.reserve(source.nodes.size());
+        for (const hdcodex::MaterialXProgramNode& sourceNode : source.nodes) {
+            hdcodex::SceneMaterial::GeneratedNode node{
+                .name = sourceNode.name,
+                .category = sourceNode.category,
+                .nodeDef = sourceNode.nodeDef,
+                .type = sourceNode.type,
+            };
+            node.inputs.reserve(sourceNode.inputs.size());
+            for (const hdcodex::MaterialXProgramInput& sourceInput : sourceNode.inputs) {
+                node.inputs.push_back({
+                    .name = sourceInput.name,
+                    .type = sourceInput.type,
+                    .value = sourceInput.value,
+                    .upstreamNode = sourceInput.upstreamNode,
+                    .upstreamOutput = sourceInput.upstreamOutput,
+                    .colorSpace = sourceInput.colorSpace,
+                });
+            }
+            target.push_back(std::move(node));
         }
-        material.materialXProgram.push_back(std::move(node));
-    }
+    };
+    copyProgram(compiled.program, material.materialXOutputNode,
+                material.materialXProgram);
+    copyProgram(compiled.displacementProgram,
+                material.materialXDisplacementOutputNode,
+                material.materialXDisplacementProgram);
 }
 
 std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
@@ -225,6 +236,25 @@ std::shared_ptr<const hdcodex::MaterialXCompiledShader> CompileMaterialX(
 
     hdcodex::MaterialXCompiledShader compiled = compiler->CompileDocument(
         document, materialPath.GetName(), mode);
+    const auto displacementTerminal =
+        network.terminals.find(HdMaterialTerminalTokens->displacement);
+    if (displacementTerminal != network.terminals.end()) {
+        const auto displacementNode = network.nodes.find(
+            displacementTerminal->second.upstreamNode);
+        if (displacementNode != network.nodes.end()) {
+            const MaterialX::DocumentPtr displacementDocument =
+                HdMtlxCreateMtlxDocumentFromHdNetwork(
+                    network,
+                    displacementNode->second,
+                    displacementTerminal->second.upstreamNode,
+                    materialPath,
+                    HdMtlxStdLibraries());
+            if (displacementDocument) {
+                compiled.displacementProgram = compiler->CompileProgram(
+                    displacementDocument, "displacementshader");
+            }
+        }
+    }
     if (compiled.closure) {
         compiled.closure->id = materialPath.GetString();
         // Provenance is retained for diagnostics only. Closure behavior has

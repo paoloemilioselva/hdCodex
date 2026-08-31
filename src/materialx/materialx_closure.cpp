@@ -24,6 +24,7 @@ struct Value {
     std::array<float, 4> number{};
     std::string text;
     std::string texture;
+    std::string textureColorSpace;
     int textureChannel{-1};
     bool textureInverted{false};
     float normalScale{1.0F};
@@ -99,7 +100,10 @@ std::string NodeError(const MaterialXProgramNode& node, std::string_view message
 
 class ProgramEvaluator final {
 public:
-    explicit ProgramEvaluator(const MaterialXGeneratedProgram& program)
+    explicit ProgramEvaluator(
+        const MaterialXGeneratedProgram& program,
+        const MaterialXEvaluationContext* context = nullptr)
+        : _context(context)
     {
         for (const MaterialXProgramNode& node : program.nodes) {
             _nodes.emplace(node.name, &node);
@@ -227,17 +231,56 @@ private:
                 return fallback;
             }
             Value result;
-            result.kind = Value::Kind::Texture;
             result.type = node.type;
             result.texture = file.text;
+            result.textureColorSpace = fileInput ? fileInput->colorSpace : std::string();
+            if (_context && _context->sampleTexture) {
+                std::array<float, 2> texcoord = _context->texcoord;
+                if (FindInput(node, "texcoord")) {
+                    const Value coordinates = Input(node, "texcoord");
+                    if (coordinates.kind != Value::Kind::Numeric ||
+                        ComponentCount(coordinates.type) < 2U) {
+                        throw std::runtime_error(NodeError(
+                            node, "has a non-numeric texcoord input"));
+                    }
+                    texcoord = {
+                        coordinates.number[0], coordinates.number[1]};
+                }
+                result.kind = Value::Kind::Numeric;
+                const std::array<float, 4> sampled = _context->sampleTexture(
+                    result.texture, result.textureColorSpace, texcoord);
+                result.number = sampled;
+            } else {
+                result.kind = Value::Kind::Texture;
+            }
             return result;
         }
         if (node.category == "geompropvalue" || node.category == "normal" ||
             node.category == "tangent" || node.category == "bitangent" ||
             node.category == "position" || node.category == "texcoord") {
             Value result;
-            result.kind = Value::Kind::Geometric;
             result.type = node.type;
+            if (!_context) {
+                result.kind = Value::Kind::Geometric;
+                return result;
+            }
+            result.kind = Value::Kind::Numeric;
+            if (node.category == "geompropvalue" || node.category == "texcoord") {
+                result.number = {
+                    _context->texcoord[0], _context->texcoord[1], 0.0F, 0.0F};
+            } else if (node.category == "position") {
+                result.number = {
+                    _context->position[0], _context->position[1],
+                    _context->position[2], 0.0F};
+            } else {
+                const std::array<float, 3>* direction = &_context->normal;
+                if (node.category == "tangent") direction = &_context->tangent;
+                else if (node.category == "bitangent") {
+                    direction = &_context->bitangent;
+                }
+                result.number = {
+                    (*direction)[0], (*direction)[1], (*direction)[2], 0.0F};
+            }
             return result;
         }
         if (node.category == "artistic_ior") {
@@ -713,6 +756,7 @@ private:
     }
 
     std::map<std::string, const MaterialXProgramNode*, std::less<>> _nodes;
+    const MaterialXEvaluationContext* _context{};
     mutable std::map<std::string, Value, std::less<>> _cache;
     mutable std::set<std::string, std::less<>> _active;
 };
@@ -1347,6 +1391,43 @@ SceneMaterial CompileMaterialXClosure(
     std::string_view terminalNodeDef)
 {
     return ClosureCompiler(program).Compile(terminalNodeDef);
+}
+
+MaterialXDisplacement EvaluateMaterialXDisplacement(
+    const MaterialXGeneratedProgram& program,
+    const MaterialXEvaluationContext& context)
+{
+    if (program.outputNode.empty()) {
+        throw std::runtime_error(
+            "MaterialX displacement program has no output node");
+    }
+    ProgramEvaluator evaluator(program, &context);
+    const MaterialXProgramNode& terminal = evaluator.Node(program.outputNode);
+    if (terminal.category != "displacement" &&
+        terminal.nodeDef != "ND_displacement_float" &&
+        terminal.nodeDef != "ND_displacement_vector3") {
+        throw std::runtime_error(NodeError(
+            terminal, "is not a MaterialX displacement constructor"));
+    }
+    const Value displacement = evaluator.Input(terminal, "displacement");
+    const Value scale = evaluator.InputOr(terminal, "scale", "float", "1");
+    if (displacement.kind != Value::Kind::Numeric ||
+        scale.kind != Value::Kind::Numeric) {
+        throw std::runtime_error(NodeError(
+            terminal, "did not evaluate to numeric displacement"));
+    }
+
+    MaterialXDisplacement result;
+    result.tangentSpace = ComponentCount(displacement.type) >= 3U;
+    if (result.tangentSpace) {
+        for (std::size_t component = 0; component < 3U; ++component) {
+            result.vector[component] =
+                displacement.number[component] * scale.number[0];
+        }
+    } else {
+        result.vector[2] = displacement.number[0] * scale.number[0];
+    }
+    return result;
 }
 
 } // namespace hdcodex

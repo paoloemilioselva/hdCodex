@@ -20,11 +20,13 @@ public:
         hdcodex::MaterialXCompiler* materialCompiler,
         hdcodex::ShadingMode shadingMode,
         bool subdivisionEnabled,
-        int subdivisionLevel)
+        int subdivisionLevel,
+        bool displacementEnabled)
         : _scene(scene), _materialCompiler(materialCompiler),
           _shadingMode(shadingMode),
           _subdivisionEnabled(subdivisionEnabled),
-          _subdivisionLevel(subdivisionLevel) {}
+          _subdivisionLevel(subdivisionLevel),
+          _displacementEnabled(displacementEnabled) {}
 
     void MarkSceneDirty() noexcept { (void)_scene->MarkDirty(); }
     [[nodiscard]] hdcodex::VersionedScene* GetScene() const noexcept { return _scene; }
@@ -58,6 +60,15 @@ public:
     {
         return _subdivisionLevel.load(std::memory_order_acquire);
     }
+    bool SetDisplacementEnabled(bool enabled) noexcept
+    {
+        return _displacementEnabled.exchange(
+            enabled, std::memory_order_acq_rel) != enabled;
+    }
+    [[nodiscard]] bool IsDisplacementEnabled() const noexcept
+    {
+        return _displacementEnabled.load(std::memory_order_acquire);
+    }
 
 private:
     hdcodex::VersionedScene* _scene;
@@ -65,6 +76,7 @@ private:
     std::atomic<hdcodex::ShadingMode> _shadingMode;
     std::atomic<bool> _subdivisionEnabled;
     std::atomic<int> _subdivisionLevel;
+    std::atomic<bool> _displacementEnabled;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

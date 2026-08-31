@@ -103,6 +103,9 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
     HdRenderDelegate::SetRenderSetting(
         TfToken("subdivisionLevel"), VtValue(EnvironmentInteger(
             "HDCODEX_SUBDIVISION_LEVEL", 2, 0, 8)));
+    HdRenderDelegate::SetRenderSetting(
+        TfToken("enableDisplacement"), VtValue(EnvironmentBoolean(
+            "HDCODEX_ENABLE_DISPLACEMENT", true)));
     for (const auto& [key, value] : settingsMap) {
         HdRenderDelegate::SetRenderSetting(key, value);
     }
@@ -123,7 +126,8 @@ void HdCodexRenderDelegate::Initialize(const HdRenderSettingsMap& settingsMap)
         &_scene, _materialCompiler.get(),
         shadingMode.value_or(hdcodex::ShadingMode::Fused),
         GetRenderSetting<bool>(TfToken("enableSubdivision"), true),
-        std::clamp(GetRenderSetting<int>(TfToken("subdivisionLevel"), 2), 0, 8));
+        std::clamp(GetRenderSetting<int>(TfToken("subdivisionLevel"), 2), 0, 8),
+        GetRenderSetting<bool>(TfToken("enableDisplacement"), true));
     _resourceRegistry = std::make_shared<HdResourceRegistry>();
 }
 
@@ -150,15 +154,18 @@ void HdCodexRenderDelegate::SetRenderSetting(
         return;
     }
 
-    bool subdivisionChanged = false;
+    bool geometryChanged = false;
     if (key == TfToken("enableSubdivision")) {
-        subdivisionChanged = _renderParam->SetSubdivisionEnabled(
+        geometryChanged = _renderParam->SetSubdivisionEnabled(
             VtValue::Cast<bool>(value).GetWithDefault(true));
     } else if (key == TfToken("subdivisionLevel")) {
-        subdivisionChanged = _renderParam->SetSubdivisionLevel(std::clamp(
+        geometryChanged = _renderParam->SetSubdivisionLevel(std::clamp(
             VtValue::Cast<int>(value).GetWithDefault(2), 0, 8));
+    } else if (key == TfToken("enableDisplacement")) {
+        geometryChanged = _renderParam->SetDisplacementEnabled(
+            VtValue::Cast<bool>(value).GetWithDefault(true));
     }
-    if (subdivisionChanged && _renderIndex) {
+    if (geometryChanged && _renderIndex) {
         HdChangeTracker& tracker = _renderIndex->GetChangeTracker();
         for (const SdfPath& id : _renderIndex->GetRprimIds()) {
             tracker.MarkRprimDirty(id,
@@ -278,6 +285,7 @@ HdCodexRenderDelegate::GetRenderSettingDescriptors() const
         {"Shading Mode", TfToken("shadingMode"), VtValue(std::string("fused"))},
         {"Enable Subdivision", TfToken("enableSubdivision"), VtValue(true)},
         {"Subdivision Level", TfToken("subdivisionLevel"), VtValue(2)},
+        {"Enable Displacement", TfToken("enableDisplacement"), VtValue(true)},
     };
 }
 

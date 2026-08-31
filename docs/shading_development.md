@@ -217,7 +217,7 @@ generated architecture.
 | Caustics | Incidental and very inefficient for environment paths; no robust caustics from analytic lights |
 | Emission | Visible surface EDFs plus power-weighted emissive-triangle next-event sampling and matching BSDF-hit MIS; no volume emission |
 | Lights | Hydra dome, rectangle, disk, sphere, cylinder, and distant lights plus emissive mesh triangles; analytic lights use shading-point/material-aware power selection, power-heuristic MIS covers authored domes and mesh EDFs, and automatic/lat-long domes and mesh emitters use power distributions; no portal lights or light linking |
-| Geometry shaders | Displacement unsupported; subdivision uses coarse topology |
+| Geometry shaders | MaterialX scalar and tangent-space vector displacement is evaluated after cached uniform subdivision; no adaptive/micropolygon displacement or general procedural-node coverage |
 | Hair | Hair BSDF and curve geometry unsupported |
 | Textures | Fixed repeat addressing, base mip only, no ray differentials, limited UDIM range, and role-based rather than graph-authored color handling |
 
@@ -254,7 +254,7 @@ The renderer also needs:
 - nested IOR and medium stacks;
 - heterogeneous and emissive volumes;
 - additional Hydra light and geometry types;
-- displacement, subdivision refinement, and curve/hair intersection;
+- adaptive subdivision/displacement refinement and curve/hair intersection;
 - ray differentials and full MaterialX texture sampling semantics;
 - multiple geomprops/UV sets, authored tangent frames, and back-side shaders;
 - white-furnace, lobe, PDF, gallery, and MaterialX conformance tests.

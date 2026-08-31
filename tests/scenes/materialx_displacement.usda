@@ -1,0 +1,104 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 100)
+        float focalLength = 50
+        float horizontalAperture = 36
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 1, 0, 0),
+            (0, 0, 1, 0),
+            (0, 0, 5, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DistantLight "light"
+    {
+        color3f inputs:color = (1, 0.95, 0.9)
+        float inputs:intensity = 3
+        float inputs:angle = 1
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 0.7071068, 0.7071068, 0),
+            (0, -0.7071068, 0.7071068, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def Material "material"
+    {
+        token outputs:mtlx:surface.connect = </World/material/surface.outputs:out>
+        token outputs:mtlx:displacement.connect = </World/material/displacement.outputs:out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            color3f inputs:base_color = (0.8, 0.08, 0.03)
+            float inputs:metalness = 0
+            float inputs:specular_roughness = 0.35
+            token outputs:out
+        }
+
+        def Shader "st"
+        {
+            uniform token info:id = "ND_geompropvalue_vector2"
+            string inputs:geomprop = "st"
+            float2 outputs:out
+        }
+
+        def Shader "u"
+        {
+            uniform token info:id = "ND_extract_vector2"
+            int inputs:index = 0
+            float2 inputs:in.connect = </World/material/st.outputs:out>
+            float outputs:out
+        }
+
+        def Shader "center"
+        {
+            uniform token info:id = "ND_subtract_float"
+            float inputs:in1.connect = </World/material/u.outputs:out>
+            float inputs:in2 = 0.5
+            float outputs:out
+        }
+
+        def Shader "displacement"
+        {
+            uniform token info:id = "ND_displacement_float"
+            float inputs:displacement.connect = </World/material/center.outputs:out>
+            float inputs:scale = 1
+            token outputs:out
+        }
+    }
+
+    def Mesh "surface" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        rel material:binding = </World/material>
+        point3f[] points = [
+            (-1.5, -1.5, 0),
+            (1.5, -1.5, 0),
+            (1.5, 1.5, 0),
+            (-1.5, 1.5, 0)
+        ]
+        texCoord2f[] primvars:st = [
+            (0, 0), (1, 0), (1, 1), (0, 1)
+        ] (
+            interpolation = "faceVarying"
+        )
+        uniform token subdivisionScheme = "bilinear"
+    }
+}

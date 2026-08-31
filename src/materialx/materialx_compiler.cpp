@@ -93,6 +93,8 @@ MaterialX::NodePtr ConnectedNode(
     return input->getConnectedNode();
 }
 
+std::string CanonicalColorSpace(std::string_view colorSpace);
+
 void AppendProgramNode(
     const MaterialX::NodePtr& node,
     MaterialXGeneratedProgram& program,
@@ -123,6 +125,7 @@ void AppendProgramNode(
             .value = upstream ? std::string() : input->getResolvedValueString(),
             .upstreamNode = upstream ? upstream->getNamePath() : std::string(),
             .upstreamOutput = std::move(upstreamOutput),
+            .colorSpace = CanonicalColorSpace(input->getActiveColorSpace()),
         });
     }
     program.nodes.push_back(std::move(generated));
@@ -130,7 +133,8 @@ void AppendProgramNode(
 
 MaterialXGeneratedProgram BuildGeneratedProgram(
     const MaterialX::DocumentPtr& source,
-    const MaterialX::TypedElementPtr& renderable)
+    const MaterialX::TypedElementPtr& renderable,
+    std::string_view outputType)
 {
     MaterialXGeneratedProgram program;
     if (!source || !renderable) return program;
@@ -154,8 +158,10 @@ MaterialXGeneratedProgram BuildGeneratedProgram(
     if (outputNode && outputNode->getType() == MaterialX::MATERIAL_TYPE_STRING) {
         for (const MaterialX::InputPtr& input : outputNode->getActiveInputs()) {
             const std::string& type = input->getType();
-            if (type == MaterialX::SURFACE_SHADER_TYPE_STRING ||
-                type == MaterialX::VOLUME_SHADER_TYPE_STRING) {
+            if ((!outputType.empty() && type == outputType) ||
+                (outputType.empty() &&
+                 (type == MaterialX::SURFACE_SHADER_TYPE_STRING ||
+                  type == MaterialX::VOLUME_SHADER_TYPE_STRING))) {
                 outputNode = ConnectedNode(input);
                 if (outputNode) break;
             }
@@ -167,6 +173,46 @@ MaterialXGeneratedProgram BuildGeneratedProgram(
     std::set<std::string, std::less<>> visited;
     AppendProgramNode(outputNode, program, visited);
     return program;
+}
+
+MaterialX::TypedElementPtr FindRenderable(
+    const MaterialX::DocumentPtr& document,
+    std::string_view outputType)
+{
+    const auto renderables = MaterialX::findRenderableElements(document);
+    for (const MaterialX::TypedElementPtr& renderable : renderables) {
+        if (outputType.empty() || renderable->getType() == outputType) {
+            return renderable;
+        }
+        const MaterialX::NodePtr material = renderable->asA<MaterialX::Node>();
+        if (!material || material->getType() != MaterialX::MATERIAL_TYPE_STRING) {
+            continue;
+        }
+        if (std::ranges::any_of(
+                material->getActiveInputs(), [outputType](const auto& input) {
+                    return input->getType() == outputType &&
+                        static_cast<bool>(ConnectedNode(input));
+                })) {
+            return renderable;
+        }
+    }
+
+    // findRenderableElements is intentionally surface/material oriented and
+    // does not report a standalone displacementshader terminal produced from
+    // an HdMaterialNetwork2.  Such a terminal is still a fully typed
+    // MaterialX node, so fall back to the document tree for non-surface
+    // programs used by the CPU geometry evaluator.
+    if (!outputType.empty()) {
+        for (const MaterialX::ElementPtr& element : document->traverseTree()) {
+            const MaterialX::TypedElementPtr typed =
+                element->asA<MaterialX::TypedElement>();
+            if (typed && typed->getType() == outputType &&
+                typed->isA<MaterialX::Node>()) {
+                return typed;
+            }
+        }
+    }
+    return {};
 }
 
 void DumpGeneratedProgram(
@@ -378,10 +424,10 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     const MaterialX::DocumentPtr generationDocument = document->copy();
     FlattenMaterialXUsdPrimvarReaders(generationDocument);
 
-    const auto renderables = MaterialX::findRenderableElements(generationDocument);
-    if (renderables.empty()) {
-        throw std::runtime_error("MaterialX document has no renderable element");
-    }
+    const MaterialX::TypedElementPtr renderable = FindRenderable(
+        generationDocument, MaterialX::SURFACE_SHADER_TYPE_STRING);
+    if (!renderable) throw std::runtime_error(
+        "MaterialX document has no renderable surface element");
 
     const auto generator = MaterialX::VkShaderGenerator::create();
     MaterialX::GenContext context(generator);
@@ -389,8 +435,8 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     generator->registerTypeDefs(generationDocument);
 
     const std::string validName = MaterialX::createValidName(
-        shaderName.empty() ? renderables.front()->getName() : std::string(shaderName));
-    const auto shader = generator->generate(validName, renderables.front(), context);
+        shaderName.empty() ? renderable->getName() : std::string(shaderName));
+    const auto shader = generator->generate(validName, renderable, context);
     if (!shader) throw std::runtime_error("MaterialX Vulkan shader generation returned null");
 
     MaterialXCompiledShader result;
@@ -403,7 +449,8 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     result.textures = ReflectTextures(pixelStage, generationDocument);
     if (mode != ShadingMode::RasterPreview) {
         result.program = BuildGeneratedProgram(
-            generationDocument, renderables.front());
+            generationDocument, renderable,
+            MaterialX::SURFACE_SHADER_TYPE_STRING);
         DumpGeneratedProgram(result.program, result.textures, shaderName);
         result.closure = CompileMaterialXClosure(result.program);
     }
@@ -437,6 +484,25 @@ MaterialXCompiledShader MaterialXCompiler::CompileDocument(
     result.vertexDescriptors = ReflectSpirvDescriptors(result.vertexSpirv.words);
     result.pixelDescriptors = ReflectSpirvDescriptors(result.pixelSpirv.words);
     return result;
+}
+
+MaterialXGeneratedProgram MaterialXCompiler::CompileProgram(
+    const MaterialX::DocumentPtr& document,
+    std::string_view outputType) const
+{
+    if (!document) throw std::invalid_argument(
+        "MaterialX document must not be null");
+    const MaterialX::DocumentPtr generationDocument = document->copy();
+    FlattenMaterialXUsdPrimvarReaders(generationDocument);
+    const MaterialX::TypedElementPtr renderable =
+        FindRenderable(generationDocument, outputType);
+    if (!renderable) {
+        throw std::runtime_error(
+            "MaterialX document has no renderable " +
+            std::string(outputType) + " element");
+    }
+    return BuildGeneratedProgram(
+        generationDocument, renderable, outputType);
 }
 
 } // namespace hdcodex

@@ -228,11 +228,21 @@ image while the supported closure remains active.
 
 ## Subdivision surfaces
 
-Subdivision meshes are currently rendered from their coarse polygon topology.
-The planned implementation uses only public `HdMeshTopology`, `PxOsd`, and
-OpenSubdiv APIs, with cached uniform refinement first and GPU stencil evaluation
-later. See [Subdivision plan](subdivision-plan.md) for the data model, correctness
-requirements, tests, and performance phases.
+Subdivision meshes use public `HdMeshTopology`, `PxOsd`, and OpenSubdiv APIs to
+produce a cached uniform Catmull-Clark, Loop, or bilinear refinement. Cached
+topology and interpolation tables are reused for point and UV changes; limit
+positions and normals, holes, creases, orientation, face-varying seams, and
+material subsets are preserved.
+
+MaterialX displacement programs are evaluated after refinement and before
+world transformation and BLAS construction. Scalar displacement follows the
+limit normal; vector3 displacement uses the per-corner tangent frame. Image
+nodes sample renderer-owned textures with their MaterialX color-space role.
+Discontinuous face-varying or material results split vertex groups, after which
+the displaced triangle surface supplies updated shading normals. Uniform
+refinement remains the deterministic fallback while adaptive patch evaluation
+and GPU stencil execution remain future phases. See
+[Subdivision plan](subdivision-plan.md) for correctness and performance work.
 
 ## Threading
 

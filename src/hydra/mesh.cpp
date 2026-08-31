@@ -1,7 +1,9 @@
 #include "mesh.h"
 
 #include "instancer.h"
+#include "material.h"
 #include "render_param.h"
+#include "texture_loader.h"
 
 #include "pxr/imaging/hd/changeTracker.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
@@ -19,8 +21,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -344,6 +348,338 @@ VtVec3fArray TriangulateNormals(
     return corners.size() == triangles.size() * 3U ? corners : VtVec3fArray{};
 }
 
+#if defined(HDCODEX_HAS_MATERIALX)
+float SrgbToLinear(float value)
+{
+    return value <= 0.04045F
+        ? value / 12.92F
+        : std::pow((value + 0.055F) / 1.055F, 2.4F);
+}
+
+std::array<float, 4> SampleSceneTexture(
+    hdcodex::VersionedScene* scene,
+    const std::string& textureId,
+    const std::array<float, 2>& sourceUv)
+{
+    if (!scene || textureId.empty()) return {};
+    std::array<float, 2> uv = sourceUv;
+    std::optional<hdcodex::SceneTexture> texture = scene->GetTexture(textureId);
+    if (!texture) {
+        const int tileU = static_cast<int>(std::floor(uv[0]));
+        const int tileV = static_cast<int>(std::floor(uv[1]));
+        const int tile = 1001 + tileU + tileV * 10;
+        if (tile < 1001 || tile > 1023) return {};
+        texture = scene->GetTexture(
+            textureId + "#udim=" + std::to_string(tile));
+    }
+    if (!texture || texture->width == 0 || texture->height == 0) return {};
+    uv[0] -= std::floor(uv[0]);
+    uv[1] -= std::floor(uv[1]);
+
+    const float x = uv[0] * static_cast<float>(texture->width - 1U);
+    const float y = uv[1] * static_cast<float>(texture->height - 1U);
+    const std::uint32_t x0 = static_cast<std::uint32_t>(std::floor(x));
+    const std::uint32_t y0 = static_cast<std::uint32_t>(std::floor(y));
+    const std::uint32_t x1 = std::min(x0 + 1U, texture->width - 1U);
+    const std::uint32_t y1 = std::min(y0 + 1U, texture->height - 1U);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+    const auto texel = [&texture](std::uint32_t px, std::uint32_t py) {
+        std::array<float, 4> result{};
+        const std::size_t offset =
+            (static_cast<std::size_t>(py) * texture->width + px) * 4U;
+        for (std::size_t channel = 0; channel < 4U; ++channel) {
+            if (!texture->rgbaFloat.empty()) {
+                result[channel] = texture->rgbaFloat[offset + channel];
+            } else if (offset + channel < texture->rgba.size()) {
+                result[channel] = static_cast<float>(
+                    texture->rgba[offset + channel]) / 255.0F;
+                if (texture->srgb && channel < 3U) {
+                    result[channel] = SrgbToLinear(result[channel]);
+                }
+            }
+        }
+        return result;
+    };
+    const std::array<float, 4> a = texel(x0, y0);
+    const std::array<float, 4> b = texel(x1, y0);
+    const std::array<float, 4> c = texel(x0, y1);
+    const std::array<float, 4> d = texel(x1, y1);
+    std::array<float, 4> result{};
+    for (std::size_t channel = 0; channel < 4U; ++channel) {
+        const float top = a[channel] * (1.0F - tx) + b[channel] * tx;
+        const float bottom = c[channel] * (1.0F - tx) + d[channel] * tx;
+        result[channel] = top * (1.0F - ty) + bottom * ty;
+    }
+    return result;
+}
+
+struct DisplacementProgram {
+    std::shared_ptr<const hdcodex::MaterialXCompiledShader> shader;
+    std::map<std::string, std::string, std::less<>> textureIds;
+};
+
+std::optional<DisplacementProgram> FindDisplacementProgram(
+    HdRenderIndex& renderIndex,
+    hdcodex::VersionedScene* scene,
+    const std::string& materialId)
+{
+    if (materialId.empty()) return std::nullopt;
+    HdSprim* sprim = renderIndex.GetSprim(
+        HdPrimTypeTokens->material, SdfPath(materialId));
+    auto* material = dynamic_cast<HdCodexMaterial*>(sprim);
+    if (!material) return std::nullopt;
+    DisplacementProgram result;
+    result.shader = material->GetCompiledShader();
+    if (!result.shader || result.shader->displacementProgram.outputNode.empty()) {
+        return std::nullopt;
+    }
+    for (const hdcodex::MaterialXProgramNode& node :
+         result.shader->displacementProgram.nodes) {
+        if (node.category != "image") continue;
+        const auto file = std::ranges::find_if(
+            node.inputs, [](const auto& input) { return input.name == "file"; });
+        if (file == node.inputs.end() || file->value.empty()) continue;
+        const hdcodex::TextureColorSpace colorSpace =
+            file->colorSpace == "srgb_texture"
+            ? hdcodex::TextureColorSpace::Srgb
+            : hdcodex::TextureColorSpace::Raw;
+        result.textureIds.try_emplace(
+            file->value,
+            hdcodex::LoadSceneTexture(scene, file->value, colorSpace, false));
+    }
+    return result;
+}
+
+GfVec3f OrthogonalTangent(const GfVec3f& normal, GfVec3f tangent)
+{
+    tangent -= normal * GfDot(normal, tangent);
+    if (tangent.Normalize() <= 1e-12F) {
+        tangent = std::abs(normal[2]) < 0.999F
+            ? GfCross(normal, GfVec3f(0.0F, 0.0F, 1.0F))
+            : GfCross(normal, GfVec3f(0.0F, 1.0F, 0.0F));
+        tangent.Normalize();
+    }
+    return tangent;
+}
+
+bool ApplyMaterialXDisplacement(
+    HdRenderIndex& renderIndex,
+    hdcodex::VersionedScene* scene,
+    VtVec3iArray* triangles,
+    const std::vector<float>& cornerTexcoords,
+    const VtVec3fArray& cornerNormals,
+    const std::vector<std::string>& triangleMaterialIds,
+    VtVec3fArray* points)
+{
+    if (!triangles || !points || points->empty()) return false;
+    std::map<std::string, DisplacementProgram, std::less<>> programs;
+    for (const std::string& materialId : triangleMaterialIds) {
+        if (programs.contains(materialId)) continue;
+        if (auto program = FindDisplacementProgram(
+                renderIndex, scene, materialId)) {
+            programs.emplace(materialId, std::move(*program));
+        }
+    }
+    if (programs.empty()) return false;
+
+    VtVec3fArray cornerOffsets(
+        triangles->size() * 3U, GfVec3f(0.0F));
+    std::set<std::string, std::less<>> invalidPrograms;
+    bool evaluated = false;
+    for (std::size_t triangleIndex = 0;
+         triangleIndex < triangles->size(); ++triangleIndex) {
+        const GfVec3i& triangle = (*triangles)[triangleIndex];
+        GfVec3f triangleTangent(1.0F, 0.0F, 0.0F);
+        float handedness = 1.0F;
+        if (triangle[0] >= 0 && triangle[1] >= 0 && triangle[2] >= 0 &&
+            static_cast<std::size_t>(triangle[0]) < points->size() &&
+            static_cast<std::size_t>(triangle[1]) < points->size() &&
+            static_cast<std::size_t>(triangle[2]) < points->size()) {
+            const GfVec3f edge1 = (*points)[triangle[1]] - (*points)[triangle[0]];
+            const GfVec3f edge2 = (*points)[triangle[2]] - (*points)[triangle[0]];
+            const std::size_t uvBase = triangleIndex * 6U;
+            if (uvBase + 5U < cornerTexcoords.size()) {
+                const GfVec2f uv0(cornerTexcoords[uvBase], cornerTexcoords[uvBase + 1U]);
+                const GfVec2f uv1(cornerTexcoords[uvBase + 2U], cornerTexcoords[uvBase + 3U]);
+                const GfVec2f uv2(cornerTexcoords[uvBase + 4U], cornerTexcoords[uvBase + 5U]);
+                const GfVec2f delta1 = uv1 - uv0;
+                const GfVec2f delta2 = uv2 - uv0;
+                const float determinant =
+                    delta1[0] * delta2[1] - delta1[1] * delta2[0];
+                if (std::abs(determinant) > 1e-12F) {
+                    triangleTangent =
+                        (edge1 * delta2[1] - edge2 * delta1[1]) / determinant;
+                    handedness = determinant < 0.0F ? -1.0F : 1.0F;
+                }
+            }
+        }
+
+        const std::string& materialId = triangleIndex < triangleMaterialIds.size()
+            ? triangleMaterialIds[triangleIndex] : std::string();
+        const auto foundProgram = programs.find(materialId);
+        for (int corner = 0; corner < 3; ++corner) {
+            const int pointIndex = triangle[corner];
+            if (pointIndex < 0 ||
+                static_cast<std::size_t>(pointIndex) >= points->size()) continue;
+            if (foundProgram == programs.end() ||
+                invalidPrograms.contains(materialId)) continue;
+
+            const std::size_t cornerIndex = triangleIndex * 3U +
+                static_cast<std::size_t>(corner);
+            GfVec3f normal = cornerIndex < cornerNormals.size()
+                ? cornerNormals[cornerIndex] : GfVec3f(0.0F);
+            if (normal.Normalize() <= 1e-12F) {
+                const GfVec3f edge1 = (*points)[triangle[1]] - (*points)[triangle[0]];
+                const GfVec3f edge2 = (*points)[triangle[2]] - (*points)[triangle[0]];
+                normal = GfCross(edge1, edge2);
+                normal.Normalize();
+            }
+            const GfVec3f tangent = OrthogonalTangent(normal, triangleTangent);
+            GfVec3f bitangent = GfCross(normal, tangent) * handedness;
+            bitangent.Normalize();
+            const std::size_t uvOffset = cornerIndex * 2U;
+
+            hdcodex::MaterialXEvaluationContext context;
+            context.texcoord = uvOffset + 1U < cornerTexcoords.size()
+                ? std::array<float, 2>{
+                    cornerTexcoords[uvOffset], cornerTexcoords[uvOffset + 1U]}
+                : std::array<float, 2>{};
+            const GfVec3f& point = (*points)[static_cast<std::size_t>(pointIndex)];
+            context.position = {point[0], point[1], point[2]};
+            context.normal = {normal[0], normal[1], normal[2]};
+            context.tangent = {tangent[0], tangent[1], tangent[2]};
+            context.bitangent = {bitangent[0], bitangent[1], bitangent[2]};
+            DisplacementProgram& program = foundProgram->second;
+            context.sampleTexture = [&program, scene](
+                std::string_view path, std::string_view,
+                const std::array<float, 2>& uv) {
+                const auto texture = program.textureIds.find(path);
+                return texture == program.textureIds.end()
+                    ? std::array<float, 4>{}
+                    : SampleSceneTexture(scene, texture->second, uv);
+            };
+            try {
+                const hdcodex::MaterialXDisplacement displacement =
+                    hdcodex::EvaluateMaterialXDisplacement(
+                        program.shader->displacementProgram, context);
+                cornerOffsets[cornerIndex] =
+                    tangent * displacement.vector[0] +
+                    bitangent * displacement.vector[1] +
+                    normal * displacement.vector[2];
+                evaluated = evaluated ||
+                    cornerOffsets[cornerIndex].GetLengthSq() > 1e-20F;
+            } catch (const std::exception& error) {
+                if (invalidPrograms.insert(materialId).second) {
+                    TF_WARN("hdCodex could not evaluate displacement for %s: %s",
+                        materialId.c_str(), error.what());
+                }
+            }
+        }
+    }
+    if (!evaluated) return false;
+
+    // A point may carry multiple face-varying UVs, normals, or materials.
+    // Preserve genuine displacement discontinuities by sharing the point only
+    // between corners that evaluate to the same offset.
+    struct OffsetGroup {
+        GfVec3f offset{0.0F};
+        int pointIndex = -1;
+    };
+    const std::size_t sourcePointCount = points->size();
+    std::vector<std::vector<OffsetGroup>> groups(sourcePointCount);
+    std::vector<std::size_t> cornerGroups(cornerOffsets.size(), 0U);
+    for (std::size_t triangleIndex = 0;
+         triangleIndex < triangles->size(); ++triangleIndex) {
+        const GfVec3i& triangle = (*triangles)[triangleIndex];
+        for (int corner = 0; corner < 3; ++corner) {
+            const int pointIndex = triangle[corner];
+            if (pointIndex < 0 ||
+                static_cast<std::size_t>(pointIndex) >= sourcePointCount) continue;
+            const std::size_t cornerIndex = triangleIndex * 3U +
+                static_cast<std::size_t>(corner);
+            auto& pointGroups = groups[static_cast<std::size_t>(pointIndex)];
+            const GfVec3f& offset = cornerOffsets[cornerIndex];
+            auto group = std::ranges::find_if(
+                pointGroups, [&offset](const OffsetGroup& candidate) {
+                    return (candidate.offset - offset).GetLengthSq() <= 1e-12F;
+                });
+            if (group == pointGroups.end()) {
+                pointGroups.push_back({.offset = offset});
+                cornerGroups[cornerIndex] = pointGroups.size() - 1U;
+            } else {
+                cornerGroups[cornerIndex] = static_cast<std::size_t>(
+                    std::distance(pointGroups.begin(), group));
+            }
+        }
+    }
+
+    for (std::size_t pointIndex = 0;
+         pointIndex < sourcePointCount; ++pointIndex) {
+        const GfVec3f sourcePoint = (*points)[pointIndex];
+        auto& pointGroups = groups[pointIndex];
+        for (std::size_t groupIndex = 0;
+             groupIndex < pointGroups.size(); ++groupIndex) {
+            OffsetGroup& group = pointGroups[groupIndex];
+            if (groupIndex == 0U) {
+                group.pointIndex = static_cast<int>(pointIndex);
+                (*points)[pointIndex] = sourcePoint + group.offset;
+            } else {
+                group.pointIndex = static_cast<int>(points->size());
+                points->push_back(sourcePoint + group.offset);
+            }
+        }
+    }
+    for (std::size_t triangleIndex = 0;
+         triangleIndex < triangles->size(); ++triangleIndex) {
+        GfVec3i& triangle = (*triangles)[triangleIndex];
+        for (int corner = 0; corner < 3; ++corner) {
+            const int sourceIndex = triangle[corner];
+            if (sourceIndex < 0 ||
+                static_cast<std::size_t>(sourceIndex) >= sourcePointCount) continue;
+            const std::size_t cornerIndex = triangleIndex * 3U +
+                static_cast<std::size_t>(corner);
+            triangle[corner] = groups[static_cast<std::size_t>(sourceIndex)]
+                [cornerGroups[cornerIndex]].pointIndex;
+        }
+    }
+    return true;
+}
+
+VtVec3fArray ComputeSmoothTriangleCornerNormals(
+    const VtVec3fArray& points,
+    const VtVec3iArray& triangles)
+{
+    VtVec3fArray vertexNormals(points.size(), GfVec3f(0.0F));
+    for (const GfVec3i& triangle : triangles) {
+        if (triangle[0] < 0 || triangle[1] < 0 || triangle[2] < 0 ||
+            static_cast<std::size_t>(triangle[0]) >= points.size() ||
+            static_cast<std::size_t>(triangle[1]) >= points.size() ||
+            static_cast<std::size_t>(triangle[2]) >= points.size()) continue;
+        const GfVec3f faceNormal = GfCross(
+            points[triangle[1]] - points[triangle[0]],
+            points[triangle[2]] - points[triangle[0]]);
+        for (int corner = 0; corner < 3; ++corner) {
+            vertexNormals[static_cast<std::size_t>(triangle[corner])] +=
+                faceNormal;
+        }
+    }
+    for (GfVec3f& normal : vertexNormals) normal.Normalize();
+
+    VtVec3fArray result;
+    result.reserve(triangles.size() * 3U);
+    for (const GfVec3i& triangle : triangles) {
+        for (int corner = 0; corner < 3; ++corner) {
+            result.push_back(triangle[corner] >= 0 &&
+                static_cast<std::size_t>(triangle[corner]) < vertexNormals.size()
+                ? vertexNormals[static_cast<std::size_t>(triangle[corner])]
+                : GfVec3f(0.0F));
+        }
+    }
+    return result;
+}
+#endif
+
 } // namespace
 
 HdCodexMesh::HdCodexMesh(const SdfPath& id) : HdMesh(id) {}
@@ -583,11 +919,7 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 : TriangulateTextureCoordinates(
                     topology, id, triangles, primitiveParams, texcoords,
                     texcoordIndices, texcoordInterpolation);
-            if (displayStyle.flatShadingEnabled) {
-                normals.clear();
-                normalIndices.clear();
-                normalInterpolation = HdInterpolationConstant;
-            } else if (normals.empty()) {
+            if (normals.empty()) {
                 Hd_VertexAdjacency adjacency;
                 adjacency.BuildAdjacencyTable(&topology);
                 normals = Hd_SmoothNormals::ComputeSmoothNormals(
@@ -595,9 +927,21 @@ void HdCodexMesh::Sync(HdSceneDelegate* sceneDelegate,
                 normalIndices.clear();
                 normalInterpolation = HdInterpolationVertex;
             }
-            const VtVec3fArray cornerNormals = TriangulateNormals(
+            VtVec3fArray cornerNormals = TriangulateNormals(
                 topology, id, triangles, primitiveParams, normals,
                 normalIndices, normalInterpolation);
+#if defined(HDCODEX_HAS_MATERIALX)
+            const bool displaced = param->IsDisplacementEnabled() &&
+                ApplyMaterialXDisplacement(
+                    sceneDelegate->GetRenderIndex(), scene, &triangles,
+                    cornerTexcoords, cornerNormals, triangleMaterialIds,
+                    &points);
+            if (displaced && !displayStyle.flatShadingEnabled) {
+                cornerNormals = ComputeSmoothTriangleCornerNormals(
+                    points, triangles);
+            }
+#endif
+            if (displayStyle.flatShadingEnabled) cornerNormals.clear();
 
             hdcodex::SceneMesh mesh;
             mesh.id = id.GetString();

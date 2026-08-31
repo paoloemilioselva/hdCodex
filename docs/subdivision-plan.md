@@ -15,9 +15,17 @@ face-varying stencil tables are cached per mesh. Animated point and primvar
 values reevaluate against those tables; topology, tag, level, or face-varying
 index changes rebuild the cache. Tests assert both reuse and invalidation.
 
+MaterialX scalar and tangent-space vector displacement is implemented after
+uniform refinement. The CPU evaluator consumes the dependency-ordered
+MaterialX terminal program, mesh coordinates and tangent frame, and
+renderer-owned textures. Discontinuous UV/material results split vertex groups;
+normals are regenerated from the displaced triangles. The independent
+`enableDisplacement` / `HDCODEX_ENABLE_DISPLACEMENT` toggle defaults to enabled.
+
 Still required before Phase 2 is complete: cover arbitrary retained primvars
 rather than only the renderer's primary UV set, add Hydra dirty-bit integration
-tests, and add checked-in focused image comparisons.
+tests, and add checked-in focused image comparisons. Adaptive/micropolygon
+displacement and displacement-bound-driven refinement belong to Phase 4.
 
 ## Scope and constraints
 
@@ -111,6 +119,8 @@ the deterministic fallback for unsupported hardware and regression testing.
   disabling it preserves the authored coarse cage.
 - `subdivisionLevel` / `HDCODEX_SUBDIVISION_LEVEL`: defaults to 2 and accepts
   levels 0–8. Level 0 is the coarse cage even when subdivision is enabled.
+- `enableDisplacement` / `HDCODEX_ENABLE_DISPLACEMENT`: defaults to enabled and
+  independently bypasses MaterialX geometry displacement.
 
 The fixed level is deliberately renderer-owned and deterministic. Adaptive,
 camera-dependent refinement remains Phase 4.
