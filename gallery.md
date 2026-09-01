@@ -5,7 +5,8 @@ These images are versioned visual baselines, not golden-reference renders.
 The checked-in baselines are 1024 pixels wide and use 1024 spatial samples to
 reduce residual path-tracing noise. They render in 32 progressive updates with
 subdivision and MaterialX displacement enabled at the deterministic level-2
-gallery setting.
+gallery setting. The New Zealand height-map scene is the deliberate exception:
+its one authored quad is uniformly refined at level 8 before displacement.
 `render_gallery.bat` preserves the renderer's scene-linear output as temporary
 EXRs under `build/gallery-linear`, then writes these display JPEGs through a
 neutral HDR highlight compressor and the standard sRGB transfer function. An
@@ -122,3 +123,28 @@ set "HDCODEX_SAMPLES_PER_UPDATE=32"
 ```
 
 ![OpenPBR Playground](gallery/openpbr_playground.jpg)
+
+### New Zealand Height Map
+
+This focused displacement baseline authors one bilinear quad and evaluates a
+raw MaterialX `ND_image_float` height map after uniform level-8 refinement. The
+same map drives the surface color so texture resolution and UV orientation are
+visible independently of the displaced silhouette.
+
+**Measured wall time (2026-09-01):** 691.620 seconds (11m 31.620s) at 1024
+pixels wide, 1024 spatial samples, 32 samples per update, and subdivision level
+8. This end-to-end render time includes renderer startup, scene loading,
+MaterialX compilation, displacement refinement, and sampling; display-JPEG
+conversion is excluded.
+
+**Command:**
+```cmd
+set "HDCODEX_SAMPLES_PER_PIXEL=1024"
+set "HDCODEX_SAMPLES_PER_UPDATE=32"
+set "HDCODEX_ENABLE_SUBDIVISION=1"
+set "HDCODEX_SUBDIVISION_LEVEL=8"
+set "HDCODEX_ENABLE_DISPLACEMENT=1"
+.\render_codex.bat --imageWidth 1024 --colorCorrectionMode disabled --camera camera gallery\newzealand_heightmap.usda build\gallery-linear\newzealand_heightmap.exr
+```
+
+![New Zealand Height Map](gallery/newzealand_heightmap.jpg)

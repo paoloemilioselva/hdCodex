@@ -16,6 +16,7 @@
 /shader-cache/
 *.exr
 *.png
+!gallery/newzealand_height_map.png
 
 # Python helpers used by dependency builds
 __pycache__/

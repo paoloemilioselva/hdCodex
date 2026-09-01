@@ -52,4 +52,12 @@ IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
 CALL "%~dp0render_codex.bat" --imageWidth 1024 --colorCorrectionMode disabled --purposes render --camera renderCam_mainCU "%~dp0gallery\openpbr_playground.usda" "%HDCODEX_GALLERY_LINEAR%\openpbr_playground.exr"
 IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
 CALL "%~dp0display_gallery_image.bat" "%HDCODEX_GALLERY_LINEAR%\openpbr_playground.exr" "%~dp0gallery\openpbr_playground.jpg" "%HDCODEX_GALLERY_EXPOSURE%"
+IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
+
+REM The authored New Zealand mesh is a single quad, so use level 8 to provide
+REM enough vertices for the height-map displacement baseline.
+SET "HDCODEX_SUBDIVISION_LEVEL=8"
+CALL "%~dp0render_codex.bat" --imageWidth 1024 --colorCorrectionMode disabled --camera camera "%~dp0gallery\newzealand_heightmap.usda" "%HDCODEX_GALLERY_LINEAR%\newzealand_heightmap.exr"
+IF ERRORLEVEL 1 EXIT /B %ERRORLEVEL%
+CALL "%~dp0display_gallery_image.bat" "%HDCODEX_GALLERY_LINEAR%\newzealand_heightmap.exr" "%~dp0gallery\newzealand_heightmap.jpg" "%HDCODEX_GALLERY_EXPOSURE%"
 EXIT /B %ERRORLEVEL%

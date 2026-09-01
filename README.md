@@ -223,6 +223,8 @@ The images in `gallery/` are checked-in visual baselines. They cover:
   conductor, texture, and subsurface behavior.
 - Pixar KitchenSet for Z-up coordinates and per-mesh `displayColor` fallback.
 - Collective Project 001 for UsdSkel deformation and mesh-subset materials.
+- New Zealand Height Map for image-driven MaterialX displacement of a single
+  authored quad after level-8 bilinear refinement.
 
 Run `render_gallery.bat` to regenerate every baseline at 1024 pixels wide and
 1024 samples per pixel. The renderer remains scene-linear: the batch records

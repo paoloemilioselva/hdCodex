@@ -1,0 +1,121 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# This stage intentionally authors only one coarse quad. For a useful terrain
+# silhouette in hdCodex, render with HDCODEX_SUBDIVISION_LEVEL=8; lower levels
+# remain useful for checking displacement behavior at coarse tessellation.
+def Xform "World"
+{
+    def Camera "camera"
+    {
+        float2 clippingRange = (0.1, 100)
+        float focalLength = 45
+        float horizontalAperture = 36
+        matrix4d xformOp:transform = (
+            (0.847998, 0, -0.529999, 0),
+            (-0.236379, 0.895041, -0.378206, 0),
+            (0.474371, 0.446229, 0.759006, 0),
+            (5, 5, 8, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DistantLight "sun"
+    {
+        color3f inputs:color = (1, 0.94, 0.82)
+        float inputs:intensity = 3
+        float inputs:angle = 1
+        matrix4d xformOp:transform = (
+            (1, 0, 0, 0),
+            (0, 0.7071068, 0.7071068, 0),
+            (0, -0.7071068, 0.7071068, 0),
+            (0, 0, 0, 1)
+        )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DomeLight "sky"
+    {
+        color3f inputs:color = (0.32, 0.45, 0.65)
+        float inputs:intensity = 0.5
+    }
+
+    def Material "terrainMaterial"
+    {
+        token outputs:mtlx:surface.connect = </World/terrainMaterial/surface.outputs:out>
+        token outputs:mtlx:displacement.connect = </World/terrainMaterial/displacement.outputs:out>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "ND_standard_surface_surfaceshader"
+            float inputs:base = 0.9
+            color3f inputs:base_color.connect = </World/terrainMaterial/heightColor.outputs:out>
+            float inputs:metalness = 0
+            float inputs:specular_roughness = 0.62
+            token outputs:out
+        }
+
+        def Shader "st"
+        {
+            uniform token info:id = "ND_geompropvalue_vector2"
+            string inputs:geomprop = "st"
+            float2 outputs:out
+        }
+
+        def Shader "height"
+        {
+            uniform token info:id = "ND_image_float"
+            asset inputs:file = @newzealand_height_map.png@ (
+                colorSpace = "raw"
+            )
+            float2 inputs:texcoord.connect = </World/terrainMaterial/st.outputs:out>
+            float outputs:out
+        }
+
+        # Showing the height map in the base color makes UV orientation and
+        # texture loading immediately visible, independently of tessellation.
+        def Shader "heightColor"
+        {
+            uniform token info:id = "ND_image_color3"
+            asset inputs:file = @newzealand_height_map.png@ (
+                colorSpace = "raw"
+            )
+            float2 inputs:texcoord.connect = </World/terrainMaterial/st.outputs:out>
+            color3f outputs:out
+        }
+
+        def Shader "displacement"
+        {
+            uniform token info:id = "ND_displacement_float"
+            float inputs:displacement.connect = </World/terrainMaterial/height.outputs:out>
+            float inputs:scale = 0.8
+            token outputs:out
+        }
+    }
+
+    def Mesh "newzealand" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        rel material:binding = </World/terrainMaterial>
+        point3f[] points = [
+            (-2, 0, -3),
+            (-2, 0, 3),
+            (2, 0, 3),
+            (2, 0, -3)
+        ]
+        texCoord2f[] primvars:st = [
+            (0, 1), (0, 0), (1, 0), (1, 1)
+        ] (
+            interpolation = "faceVarying"
+        )
+        uniform int primvars:displayStyle:refineLevel = 8
+        uniform token subdivisionScheme = "bilinear"
+    }
+}
