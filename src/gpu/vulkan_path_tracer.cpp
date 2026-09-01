@@ -55,6 +55,8 @@ struct GpuMaterial {
     vec4 sheenColorMode;
     vec4 diffuseProperties;
     vec4 translucentColorWeight;
+    vec4 baseColorTextureScale;
+    vec4 baseColorTextureBias;
     uvec4 textureIndices0;
     uvec4 textureIndices1;
     uvec4 textureIndices2;
@@ -1292,9 +1294,16 @@ void main()
             throughput *= exp(-mediumAbsorption * distance);
         }
         GpuMaterial material = materials[triangleMaterials[primitive]];
-        vec3 baseColorRgb = sampleMaterialTexture(
-            material.textureIndices0.x, surfaceUv,
-            vec4(material.baseColorMetalness.rgb, 1.0)).rgb;
+        vec3 baseColorRgb = material.baseColorMetalness.rgb;
+        if (material.textureIndices0.x != 0xffffffffu) {
+            vec4 baseColorSample = sampleMaterialTexture(
+                material.textureIndices0.x, surfaceUv, vec4(baseColorRgb, 1.0));
+            int channel = int(round(material.baseColorTextureScale.w));
+            vec3 sourceColor = channel < 0
+                ? baseColorSample.rgb : vec3(baseColorSample[channel]);
+            baseColorRgb = material.baseColorTextureBias.rgb +
+                material.baseColorTextureScale.rgb * sourceColor;
+        }
         vec3 baseColor = vec3(reflectanceSpectrum(baseColorRgb, wavelength));
         float metalness = clamp(sampleMaterialTexture(
             material.textureIndices0.y, surfaceUv,
@@ -1911,6 +1920,8 @@ struct GpuMaterial {
     std::array<float, 4> sheenColorMode;
     std::array<float, 4> diffuseProperties;
     std::array<float, 4> translucentColorWeight;
+    std::array<float, 4> baseColorTextureScale;
+    std::array<float, 4> baseColorTextureBias;
     std::array<std::uint32_t, 4> textureIndices0;
     std::array<std::uint32_t, 4> textureIndices1;
     std::array<std::uint32_t, 4> textureIndices2;
@@ -1919,7 +1930,7 @@ struct GpuMaterial {
     std::array<std::uint32_t, 4> textureIndices5;
 };
 
-static_assert(sizeof(GpuMaterial) == 21U * 16U);
+static_assert(sizeof(GpuMaterial) == 23U * 16U);
 
 struct GpuLight {
     std::array<float, 4> colorIntensity;
@@ -2771,6 +2782,8 @@ public:
                 {1.0F, 1.0F, 1.0F, 0.0F},
                 {0.0F, 0.0F, 1.0F, 0.0F},
                 {1.0F, 1.0F, 1.0F, 0.0F},
+                {1.0F, 1.0F, 1.0F, -1.0F},
+                {0.0F, 0.0F, 0.0F, 0.0F},
                 {kMissingTexture, kMissingTexture,
                  kMissingTexture, kMissingTexture},
                 {kMissingTexture, kMissingTexture,
@@ -2827,6 +2840,13 @@ public:
                  material.diffuseWeight, 0.0F},
                 {material.translucentColor[0], material.translucentColor[1],
                  material.translucentColor[2], material.translucentWeight},
+                {material.baseColorTextureScale[0],
+                 material.baseColorTextureScale[1],
+                 material.baseColorTextureScale[2],
+                 static_cast<float>(material.baseColorTextureChannel)},
+                {material.baseColorTextureBias[0],
+                 material.baseColorTextureBias[1],
+                 material.baseColorTextureBias[2], 0.0F},
                 {textureIndex(material.baseColorTexture),
                  textureIndex(material.metalnessTexture),
                  textureIndex(material.roughnessTexture),

@@ -6,7 +6,7 @@ The checked-in baselines are 1024 pixels wide and use 1024 spatial samples to
 reduce residual path-tracing noise. They render in 32 progressive updates with
 subdivision and MaterialX displacement enabled at the deterministic level-2
 gallery setting. The New Zealand height-map scene is the deliberate exception:
-its one authored quad is uniformly refined at level 8 before displacement.
+its one authored quad is uniformly refined at level 6 before displacement.
 `render_gallery.bat` preserves the renderer's scene-linear output as temporary
 EXRs under `build/gallery-linear`, then writes these display JPEGs through a
 neutral HDR highlight compressor and the standard sRGB transfer function. An
@@ -127,7 +127,7 @@ set "HDCODEX_SAMPLES_PER_UPDATE=32"
 ### New Zealand Height Map
 
 This focused displacement baseline authors one bilinear quad and evaluates a
-raw MaterialX `ND_image_float` height map after uniform level-8 refinement. The
+raw MaterialX `ND_image_float` height map after uniform level-6 refinement. The
 same map drives the surface color so texture resolution and UV orientation are
 visible independently of the displaced silhouette.
 

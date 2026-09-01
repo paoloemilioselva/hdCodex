@@ -27,6 +27,8 @@ struct Value {
     std::string textureColorSpace;
     int textureChannel{-1};
     bool textureInverted{false};
+    std::array<float, 4> textureScale{1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> textureBias{};
     float normalScale{1.0F};
 };
 
@@ -508,8 +510,27 @@ private:
             const Value amount = Input(node, "mix");
             if (amount.kind != Value::Kind::Numeric) {
                 const Value background = Input(node, "bg");
-                if (background.kind == Value::Kind::Texture) return background;
                 const Value foreground = Input(node, "fg");
+                if (amount.kind == Value::Kind::Texture &&
+                    background.kind == Value::Kind::Numeric &&
+                    foreground.kind == Value::Kind::Numeric) {
+                    Value result = amount;
+                    result.type = node.type;
+                    result.textureChannel = amount.textureChannel >= 0
+                        ? amount.textureChannel : 0;
+                    const std::size_t count = ComponentCount(node.type);
+                    for (std::size_t component = 0; component < count; ++component) {
+                        const float low = background.number[component];
+                        const float high = foreground.number[component];
+                        result.textureScale[component] = amount.textureInverted
+                            ? low - high : high - low;
+                        result.textureBias[component] = amount.textureInverted
+                            ? high : low;
+                    }
+                    result.textureInverted = false;
+                    return result;
+                }
+                if (background.kind == Value::Kind::Texture) return background;
                 if (foreground.kind == Value::Kind::Texture) return foreground;
                 return background;
             }
@@ -799,6 +820,10 @@ struct ClosureCompiler final {
                 evaluator.Node(bsdf->upstreamNode);
             containsDiffuseClosure =
                 (Classify(bsdfNode) & ClosureDiffuse) != 0U;
+            const unsigned int closureKind = Classify(bsdfNode);
+            if ((closureKind & (ClosureConductor | ClosureReflection)) == 0U) {
+                material.specularWeight = 0.0F;
+            }
             VisitBsdf(bsdfNode, 0, false);
         }
         if (const MaterialXProgramInput* edf = FindInput(surface, "edf");
@@ -992,14 +1017,20 @@ private:
                          material.diffuseWeightTexture,
                          node, "diffuse weight");
             AssignColor(evaluator.Input(node, "color"), material.baseColor,
-                        material.baseColorTexture, node, "diffuse color");
-            AssignScalar(evaluator.InputOr(node, "roughness", "float", "0"),
-                         material.diffuseRoughness,
+                        material.baseColorTexture, node, "diffuse color",
+                        &material.baseColorTextureScale,
+                        &material.baseColorTextureBias,
+                        &material.baseColorTextureChannel);
+            const Value diffuseRoughness = evaluator.InputOr(
+                node, "roughness", "float", "0");
+            AssignScalar(diffuseRoughness, material.diffuseRoughness,
                          material.diffuseRoughnessTexture,
                          node, "diffuse roughness");
             material.diffuseModel = node.category == "burley_diffuse_bsdf"
                 ? SceneMaterial::DiffuseModel::Burley
-                : SceneMaterial::DiffuseModel::OrenNayar;
+                : NumericIs(diffuseRoughness, 0.0F)
+                    ? SceneMaterial::DiffuseModel::Lambert
+                    : SceneMaterial::DiffuseModel::OrenNayar;
             if (node.category == "oren_nayar_diffuse_bsdf") {
                 const Value compensation = evaluator.InputOr(
                     node, "energy_compensation", "boolean", "false");
@@ -1360,14 +1391,30 @@ private:
 
     static void AssignColor(
         const Value& source, std::array<float, 3>& target, std::string& texture,
-        const MaterialXProgramNode& node, std::string_view role)
+        const MaterialXProgramNode& node, std::string_view role,
+        std::array<float, 3>* textureScale = nullptr,
+        std::array<float, 3>* textureBias = nullptr,
+        int* textureChannel = nullptr)
     {
         if (source.kind == Value::Kind::Texture) {
-            if (source.textureChannel >= 0 || source.textureInverted) {
+            const bool transformed = source.textureChannel >= 0 ||
+                source.textureInverted ||
+                !std::ranges::equal(source.textureScale,
+                    std::array<float, 4>{1.0F, 1.0F, 1.0F, 1.0F}) ||
+                !std::ranges::equal(source.textureBias,
+                    std::array<float, 4>{});
+            if (transformed && (!textureScale || !textureBias || !textureChannel)) {
                 throw std::runtime_error(NodeError(
-                    node, "uses a swizzled or inverted color texture"));
+                    node, "uses a transformed color texture unsupported by this role"));
             }
             texture = source.texture;
+            if (textureScale) {
+                std::copy_n(source.textureScale.begin(), 3U, textureScale->begin());
+            }
+            if (textureBias) {
+                std::copy_n(source.textureBias.begin(), 3U, textureBias->begin());
+            }
+            if (textureChannel) *textureChannel = source.textureChannel;
             return;
         }
         if (source.kind != Value::Kind::Numeric) {

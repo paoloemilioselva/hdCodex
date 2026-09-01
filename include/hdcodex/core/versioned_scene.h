@@ -115,6 +115,13 @@ struct SceneMaterial {
     std::string materialXDisplacementOutputNode;
     std::vector<GeneratedNode> materialXDisplacementProgram;
     std::array<float, 3> baseColor{0.8F, 0.8F, 0.8F};
+    /// Affine transform applied to a base-color texture. A non-negative
+    /// channel replicates that scalar component before applying the transform;
+    /// -1 preserves the texture RGB value. This represents MaterialX color
+    /// ramps driven by one image without baking a renderer-specific texture.
+    std::array<float, 3> baseColorTextureScale{1.0F, 1.0F, 1.0F};
+    std::array<float, 3> baseColorTextureBias{0.0F, 0.0F, 0.0F};
+    int baseColorTextureChannel{-1};
     std::array<float, 3> emission{0.0F, 0.0F, 0.0F};
     std::array<float, 3> transmissionColor{1.0F, 1.0F, 1.0F};
     std::array<float, 3> transmissionScatter{0.0F, 0.0F, 0.0F};

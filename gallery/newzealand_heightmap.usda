@@ -6,7 +6,7 @@
 )
 
 # This stage intentionally authors only one coarse quad. For a useful terrain
-# silhouette in hdCodex, render with HDCODEX_SUBDIVISION_LEVEL=8; lower levels
+# silhouette in hdCodex, render with HDCODEX_SUBDIVISION_LEVEL=6; lower levels
 # remain useful for checking displacement behavior at coarse tessellation.
 def Xform "World"
 {
@@ -51,11 +51,17 @@ def Xform "World"
 
         def Shader "surface"
         {
-            uniform token info:id = "ND_standard_surface_surfaceshader"
-            float inputs:base = 0.9
-            color3f inputs:base_color.connect = </World/terrainMaterial/heightColor.outputs:out>
-            float inputs:metalness = 0
-            float inputs:specular_roughness = 0.62
+            uniform token info:id = "ND_surface"
+            token inputs:bsdf.connect = </World/terrainMaterial/diffuse.outputs:out>
+            token outputs:out
+        }
+
+        def Shader "diffuse"
+        {
+            uniform token info:id = "ND_oren_nayar_diffuse_bsdf"
+            color3f inputs:color.connect = </World/terrainMaterial/heightColor.outputs:out>
+            float inputs:roughness = 0
+            float inputs:weight = 1
             token outputs:out
         }
 
@@ -76,15 +82,14 @@ def Xform "World"
             float outputs:out
         }
 
-        # Showing the height map in the base color makes UV orientation and
-        # texture loading immediately visible, independently of tessellation.
+        # Drive a brown-to-green diffuse ramp from the same scalar height map
+        # used by displacement. White/high pixels select the green endpoint.
         def Shader "heightColor"
         {
-            uniform token info:id = "ND_image_color3"
-            asset inputs:file = @newzealand_height_map.png@ (
-                colorSpace = "raw"
-            )
-            float2 inputs:texcoord.connect = </World/terrainMaterial/st.outputs:out>
+            uniform token info:id = "ND_mix_color3"
+            color3f inputs:bg = (0.22, 0.075, 0.018)
+            color3f inputs:fg = (0.10, 0.42, 0.075)
+            float inputs:mix.connect = </World/terrainMaterial/height.outputs:out>
             color3f outputs:out
         }
 
@@ -92,7 +97,7 @@ def Xform "World"
         {
             uniform token info:id = "ND_displacement_float"
             float inputs:displacement.connect = </World/terrainMaterial/height.outputs:out>
-            float inputs:scale = 0.8
+            float inputs:scale = 0.3
             token outputs:out
         }
     }
@@ -115,7 +120,7 @@ def Xform "World"
         ] (
             interpolation = "faceVarying"
         )
-        uniform int primvars:displayStyle:refineLevel = 8
+        uniform int primvars:displayStyle:refineLevel = 6
         uniform token subdivisionScheme = "bilinear"
     }
 }

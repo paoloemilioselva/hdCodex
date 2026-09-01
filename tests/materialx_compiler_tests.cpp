@@ -474,6 +474,39 @@ try {
               std::abs(defaultImage.closure->baseColor[2] - 0.75F) < 1e-5F,
           "MaterialX image without a file did not use its authored default");
 
+    const hdcodex::MaterialXGeneratedProgram heightRampProgram{
+        .outputNode = "surface",
+        .nodes = {
+            {.name = "height", .category = "image",
+             .nodeDef = "ND_image_float", .type = "float", .inputs = {
+                 {.name = "file", .type = "filename", .value = "height.png"}}},
+            {.name = "height_color", .category = "mix",
+             .nodeDef = "ND_mix_color3", .type = "color3", .inputs = {
+                 {.name = "bg", .type = "color3", .value = "0.22,0.075,0.018"},
+                 {.name = "fg", .type = "color3", .value = "0.10,0.42,0.075"},
+                 {.name = "mix", .type = "float", .upstreamNode = "height"}}},
+            {.name = "diffuse", .category = "oren_nayar_diffuse_bsdf",
+             .nodeDef = "ND_oren_nayar_diffuse_bsdf", .type = "BSDF", .inputs = {
+                 {.name = "color", .type = "color3", .upstreamNode = "height_color"},
+                 {.name = "roughness", .type = "float", .value = "0"}}},
+            {.name = "surface", .category = "surface", .nodeDef = "ND_surface",
+             .type = "surfaceshader", .inputs = {
+                 {.name = "bsdf", .type = "BSDF", .upstreamNode = "diffuse"}}},
+        }};
+    const auto heightRamp = hdcodex::CompileMaterialXClosure(heightRampProgram);
+    Check(heightRamp.baseColorTexture == "height.png" &&
+              heightRamp.baseColorTextureChannel == 0 &&
+              std::abs(heightRamp.baseColorTextureBias[0] - 0.22F) < 1e-5F &&
+              std::abs(heightRamp.baseColorTextureBias[1] - 0.075F) < 1e-5F &&
+              std::abs(heightRamp.baseColorTextureScale[0] + 0.12F) < 1e-5F &&
+              std::abs(heightRamp.baseColorTextureScale[1] - 0.345F) < 1e-5F,
+          "MaterialX scalar-image color ramp lost its endpoints or source channel");
+    Check(std::abs(heightRamp.specularWeight) < 1e-5F,
+          "pure MaterialX diffuse closure retained a specular lobe");
+    Check(heightRamp.diffuseModel ==
+              hdcodex::SceneMaterial::DiffuseModel::Lambert,
+          "zero-roughness MaterialX diffuse closure did not reduce to Lambert");
+
     constexpr auto sheenXml = R"mtlx(<?xml version="1.0"?>
 <materialx version="1.39">
   <sheen_bsdf name="sheen" type="BSDF">
